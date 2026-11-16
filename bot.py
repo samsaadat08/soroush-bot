@@ -1,4 +1,5 @@
 import os
+import asyncio
 import logging
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -371,9 +372,7 @@ async def view_therapist_detail(update: Update, context: ContextTypes.DEFAULT_TY
     ]
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-def main():
-    threading.Thread(target=start_health_server, daemon=True).start()
-    init_db()
+async def run_bot():
     app = Application.builder().token(BOT_TOKEN).build()
 
     conv_handler = ConversationHandler(
@@ -398,8 +397,18 @@ def main():
     app.add_handler(CallbackQueryHandler(show_therapists_list, pattern="^(filter_|back_main)"))
     app.add_handler(CallbackQueryHandler(view_therapist_detail, pattern="^view_t_"))
 
-    logger.info("Bot is running...")
-    app.run_polling()
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling()
+    logger.info("Soroush Bot is running smoothly!")
+    await asyncio.Event().wait()
+
+def main():
+    threading.Thread(target=start_health_server, daemon=True).start()
+    init_db()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(run_bot())
 
 if __name__ == "__main__":
     main()
