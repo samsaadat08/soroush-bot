@@ -1,4 +1,6 @@
 import os
+import re
+import hashlib
 import asyncio
 import logging
 import threading
@@ -41,6 +43,18 @@ TURSO_URL = os.environ.get("TURSO_DATABASE_URL")
 TURSO_TOKEN = os.environ.get("TURSO_AUTH_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 
+# --- ابزارهای امنیتی ---
+def hash_user_id(user_id: int) -> str:
+    """تبدیل آیدی عددی تلگرام به هش غیرقابل بازگشت برای حفظ حریم خصوصی مراجعان"""
+    salt = BOT_TOKEN[:12] if BOT_TOKEN else "soroush_salt"
+    return hashlib.sha256(f"{salt}:{user_id}".encode("utf-8")).hexdigest()[:24]
+
+def sanitize_text(text: str, max_len: int = 600) -> str:
+    """پاکسازی کاراکترهای مخرب Markdown و محدود کردن طول متن"""
+    cleaned = re.sub(r"[*_`\[\]]", "", text)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:max_len]
+
 def get_db():
     return libsql_client.create_client_sync(url=TURSO_URL, auth_token=TURSO_TOKEN)
 
@@ -59,13 +73,19 @@ def init_db():
         CREATE TABLE IF NOT EXISTS experiences (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             therapist_id INTEGER NOT NULL,
-            user_telegram_id INTEGER NOT NULL,
+            user_telegram_id TEXT NOT NULL,
             issue_category TEXT NOT NULL,
             sessions_count TEXT NOT NULL,
             experience_text TEXT NOT NULL,
             status TEXT DEFAULT 'pending',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (therapist_id) REFERENCES therapists(id)
+        );
+    """)
+    client.execute("""
+        CREATE TABLE IF NOT EXISTS banned_users (
+            user_hash TEXT PRIMARY KEY,
+            banned_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
     """)
     client.close()
@@ -96,7 +116,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "سلام! به **سروش** خوش آمدید 🌱\n\n"
         "در فرهنگ ایرانی، «سروش» نماد **شنیدن، آگاهی و راهنمایی در مسیر درست** است. "
-        "این ربات هم دقیقاً با همین هدف ساخته شده؛ فضایی برای شنیدن تجربه‌های واقعی و مثبت مراجعان در مشهد، "
+        "این ربات هم دقیقاً با همین هدف ساخته شده؛ فضایی امن و ناشناس برای شنیدن تجربه‌های واقعی و مثبت مراجعان در مشهد، "
         "تا انتخاب درمانگر برای شما شفاف‌تر و آگاهانه‌تر باشد.\n\n"
         "چطور می‌توانم کمکتان کنم؟"
     )
@@ -109,6 +129,35 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def submit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    user_hash = hash_user_id(query.from_user.id)
+
+    client = get_db()
+    # ۱. بررسی مسدود بودن کاربر
+    ban_res = client.execute("SELECT 1 FROM banned_users WHERE user_hash = ?", [user_hash])
+    if ban_res.rows:
+        client.close()
+        await query.edit_message_text(
+            "⛔ دسترسی شما به بخش ثبت تجربه محدود شده است.",
+            reply_markup=main_menu_keyboard(),
+        )
+        return ConversationHandler.END
+
+    # ۲. بررسی محدودیت ثبت روزانه (حداکثر ۲ تجربه در ۲۴ ساعت)
+    rate_res = client.execute(
+        "SELECT COUNT(*) FROM experiences WHERE user_telegram_id = ? AND created_at >= datetime('now', '-1 day')",
+        [user_hash],
+    )
+    client.close()
+
+    if rate_res.rows and rate_res.rows[0][0] >= 2:
+        await query.edit_message_text(
+            "⏳ برای حفظ کیفیت و جلوگیری از ثبت‌های انبوه، هر کاربر می‌تواند حداکثر **۲ تجربه در شبانه‌روز** ثبت کند.\n"
+            "لطفاً فردا دوباره تلاش کنید.",
+            reply_markup=main_menu_keyboard(),
+            parse_mode="Markdown",
+        )
+        return ConversationHandler.END
+
     context.user_data.clear()
     await query.edit_message_text(
         "نام یا نام خانوادگی درمانگر را بنویسید (بدون پیشوند دکتر):\n"
@@ -117,12 +166,18 @@ async def submit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return SEARCH_THERAPIST
 
 async def search_therapist_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    name_query = update.message.text.strip().replace("دکتر ", "").replace("دکتر", "")
+    raw_name = update.message.text.replace("دکتر ", "").replace("دکتر", "")
+    name_query = sanitize_text(raw_name, max_len=50)
+
+    if len(name_query) < 3:
+        await update.message.reply_text("⚠️ نام وارد شده بسیار کوتاه است. لطفاً نام و نام خانوادگی را کامل‌تر بنویسید:")
+        return SEARCH_THERAPIST
+
     context.user_data["temp_name"] = name_query
 
     client = get_db()
     res = client.execute(
-        "SELECT id, full_name, clinic_name, district FROM therapists WHERE full_name LIKE ?",
+        "SELECT id, full_name, clinic_name, district FROM therapists WHERE full_name LIKE ? LIMIT 10",
         [f"%{name_query}%"],
     )
     client.close()
@@ -152,6 +207,23 @@ async def select_or_new_therapist(update: Update, context: ContextTypes.DEFAULT_
 
     if data.startswith("select_t_"):
         t_id = int(data.split("_")[2])
+        user_hash = hash_user_id(query.from_user.id)
+
+        # جلوگیری از ثبت تجربه تکراری توسط یک کاربر برای همان درمانگر
+        client = get_db()
+        dup_res = client.execute(
+            "SELECT 1 FROM experiences WHERE therapist_id = ? AND user_telegram_id = ? AND status != 'rejected'",
+            [t_id, user_hash],
+        )
+        client.close()
+
+        if dup_res.rows:
+            await query.edit_message_text(
+                "⚠️ شما قبلاً برای این درمانگر یک تجربه ثبت کرده‌اید. هر مراجع برای هر درمانگر می‌تواند یک تجربه ثبت کند.",
+                reply_markup=main_menu_keyboard(),
+            )
+            return ConversationHandler.END
+
         context.user_data["therapist_id"] = t_id
         context.user_data["is_new"] = False
         return await ask_issue(query)
@@ -162,7 +234,12 @@ async def select_or_new_therapist(update: Update, context: ContextTypes.DEFAULT_
         return NEW_CLINIC
 
 async def get_new_clinic(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["clinic_name"] = update.message.text.strip()
+    clinic = sanitize_text(update.message.text, max_len=60)
+    if len(clinic) < 2:
+        await update.message.reply_text("⚠️ لطفاً نام کلینیک یا عبارت «مطب شخصی» را وارد کنید:")
+        return NEW_CLINIC
+
+    context.user_data["clinic_name"] = clinic
     keyboard = [[InlineKeyboardButton(d, callback_data=f"dist_{d}")] for d in DISTRICTS]
     await update.message.reply_text("محدوده کلینیک یا مطب در مشهد کجاست؟", reply_markup=InlineKeyboardMarkup(keyboard))
     return NEW_DISTRICT
@@ -199,14 +276,22 @@ async def get_sessions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     context.user_data["sessions"] = query.data.replace("sess_", "")
     await query.edit_message_text(
-        "در چند خط تجربه‌ی خودتان را بنویسید (مثلاً چه ویژگی یا روشی در جلسات ایشان برای شما مفید و راهگشا بود؟):\n\n"
-        "⚠️ لطفاً از نوشتن اطلاعات خصوصی یا تشخیص‌های پزشکی خودداری کنید."
+        "در چند خط تجربه‌ی خودتان را بنویسید (بین ۲۰ تا ۶۰۰ کاراکتر):\n"
+        "مثلاً چه ویژگی یا روشی در جلسات ایشان برای شما مفید و راهگشا بود؟\n\n"
+        "⚠️ لطفاً از نوشتن شماره تماس، آدرس دقیق یا اطلاعات خصوصی خودداری کنید."
     )
     return WRITE_EXPERIENCE
 
 async def save_experience(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    exp_text = update.message.text.strip()
-    user_id = update.effective_user.id
+    exp_text = sanitize_text(update.message.text, max_len=600)
+
+    if len(exp_text) < 20:
+        await update.message.reply_text(
+            "⚠️ متن تجربه بسیار کوتاه است (حداقل ۲۰ کاراکتر). لطفاً کمی بیشتر توضیح دهید تا برای دیگران مفید باشد:"
+        )
+        return WRITE_EXPERIENCE
+
+    user_hash = hash_user_id(update.effective_user.id)
     data = context.user_data
 
     client = get_db()
@@ -226,7 +311,7 @@ async def save_experience(update: Update, context: ContextTypes.DEFAULT_TYPE):
     exp_res = client.execute(
         """INSERT INTO experiences (therapist_id, user_telegram_id, issue_category, sessions_count, experience_text, status)
            VALUES (?, ?, ?, ?, ?, 'pending') RETURNING id""",
-        [t_id, user_id, data["issue"], data["sessions"], exp_text],
+        [t_id, user_hash, data["issue"], data["sessions"], exp_text],
     )
     exp_id = exp_res.rows[0][0]
     client.close()
@@ -242,13 +327,16 @@ async def save_experience(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👤 **درمانگر:** {t_info}\n"
             f"📌 **موضوع:** {data['issue']}\n"
             f"🗓 **تعداد جلسات:** {data['sessions']}\n"
-            f"🆔 **آیدی کاربر:** `{user_id}`\n\n"
+            f"🔐 **شناسه ناشناس کاربر:** `{user_hash}`\n\n"
             f"💬 **متن تجربه:**\n{exp_text}"
         )
         admin_kb = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("✅ تایید و انتشار", callback_data=f"adm_approve_{exp_id}"),
                 InlineKeyboardButton("❌ رد کردن", callback_data=f"adm_reject_{exp_id}"),
+            ],
+            [
+                InlineKeyboardButton("🚫 رد و مسدود کردن کاربر", callback_data=f"adm_ban_{exp_id}"),
             ]
         ])
         await context.bot.send_message(chat_id=ADMIN_ID, text=admin_msg, reply_markup=admin_kb, parse_mode="Markdown")
@@ -262,14 +350,23 @@ async def admin_moderation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await query.answer()
-    action, exp_id = query.data.split("_")[1], int(query.data.split("_")[2])
-    new_status = "approved" if action == "approve" else "rejected"
+    parts = query.data.split("_")
+    action, exp_id = parts[1], int(parts[2])
 
     client = get_db()
-    client.execute("UPDATE experiences SET status = ? WHERE id = ?", [new_status, exp_id])
-    client.close()
+    if action == "ban":
+        res = client.execute("SELECT user_telegram_id FROM experiences WHERE id = ?", [exp_id])
+        if res.rows:
+            u_hash = res.rows[0][0]
+            client.execute("INSERT OR IGNORE INTO banned_users (user_hash) VALUES (?)", [u_hash])
+        client.execute("UPDATE experiences SET status = 'rejected' WHERE id = ?", [exp_id])
+        status_text = "🚫 رد شد و کاربر برای همیشه مسدود گردید."
+    else:
+        new_status = "approved" if action == "approve" else "rejected"
+        client.execute("UPDATE experiences SET status = ? WHERE id = ?", [new_status, exp_id])
+        status_text = "✅ تایید و منتشر شد." if action == "approve" else "❌ رد شد."
 
-    status_text = "✅ تایید و منتشر شد." if action == "approve" else "❌ رد شد."
+    client.close()
     await query.edit_message_text(f"{query.message.text}\n\n---\nنتیجه بررسی: {status_text}")
 
 async def browse_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -392,7 +489,7 @@ async def run_bot():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(conv_handler)
-    app.add_handler(CallbackQueryHandler(admin_moderation, pattern="^adm_(approve|reject)_"))
+    app.add_handler(CallbackQueryHandler(admin_moderation, pattern="^adm_(approve|reject|ban)_"))
     app.add_handler(CallbackQueryHandler(browse_start, pattern="^browse_start$"))
     app.add_handler(CallbackQueryHandler(show_therapists_list, pattern="^(filter_|back_main)"))
     app.add_handler(CallbackQueryHandler(view_therapist_detail, pattern="^view_t_"))
@@ -400,7 +497,7 @@ async def run_bot():
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
-    logger.info("Soroush Bot is running smoothly!")
+    logger.info("Soroush Bot is running smoothly with security layers!")
     await asyncio.Event().wait()
 
 def main():
