@@ -256,9 +256,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     user = update.effective_user
     welcome_text = (
-        "سلام! به سروش خوش آمدید 🌱✨\n\u200c\n"
+        "سلام! به سروش خوش آمدید 🌱✨\n\n"
         "«سروش» فضایی امن و کاملاً ناشناس برای به اشتراک گذاشتن تجربه‌های واقعی و مثبت مراجعان در مشهد است، "
-        "تا انتخاب درمانگر برای شما شفاف‌تر و آگاهانه‌تر باشد 💚\n\u200c\n"
+        "تا انتخاب درمانگر برای شما شفاف‌تر و آگاهانه‌تر باشد 💚\n\n"
         "👇 از دکمه‌های زیر استفاده کنید:"
     )
     await update.message.reply_text(
@@ -269,8 +269,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def open_guide_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
-        "🧭 **راهنمای انتخاب آگاهانه درمانگر**\n\u200c\n"
+        "🧭 **راهنمای انتخاب آگاهانه درمانگر**\n\n"
         "انتخاب یک درمانگر خوب، مهم‌ترین قدم در مسیر رشد و حال خوب است.\n"
         "برای اینکه با آگاهی کامل تصمیم بگیرید، یکی از موضوعات زیر را انتخاب کنید 👇",
         parse_mode="Markdown",
-        reply_markup
+        reply_markup=GUIDE_KEYBOARD,
+    )
+    return GUIDE_MENU
+
+async def handle_guide_topic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    choice = update.message.text.strip()
+    if "بازگشت به منوی اصلی" in choice:
+        return await start(update, context)
+
+    if "اخلاق" in choice:
+        text = (
+            "⚖️ **اخلاق حرفه‌ای و خطوط قرمز در اتاق درمان**\n\n"
+            "🔒 **رازدارای مطلق:**\n"
+            "تمام صحبت‌های شما در اتاق درمان کاملاً محرمانه است و بدون رضایت کتبی شما (مگر در موارد خطر جانی فوری) در اختیار هیچ‌کس حتی خانواده قرار نمی‌گیرد.\n\n
