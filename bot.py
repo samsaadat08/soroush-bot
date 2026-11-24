@@ -44,7 +44,7 @@ RENDER_EXTERNAL_URL = os.environ.get(
 PORT = int(os.environ.get("PORT", "8080"))
 
 # ---------------------------------------------------------
-# ۳. اتصال ناهمزمان (Async) به دیتابیس Turso
+# ۳. اتصال ناهمزمان (Async) به دیتابیس Turso و همگام‌سازی کامل جداول
 # ---------------------------------------------------------
 def get_db():
     db_url = TURSO_DATABASE_URL.replace("libsql://", "https://")
@@ -55,6 +55,25 @@ def get_db():
 
 async def init_db():
     async with get_db() as client:
+        # بررسی وجود ستون‌های ناسازگار NOT NULL در جدول قدیمی experiences
+        try:
+            pragma_rs = await client.execute("PRAGMA table_info(experiences)")
+            if pragma_rs.rows:
+                expected_cols = {
+                    "id", "therapist_name", "clinic_name", "clinic_address",
+                    "clinic_phone", "neighborhood", "therapy_domain",
+                    "approach", "experience_text", "status", "created_at"
+                }
+                # اگر ستون قدیمی اجباری (notnull == 1) خارج از لیست جدید وجود داشت، جدول را مهاجرت می‌دهیم
+                has_legacy_notnull = any(
+                    (row[1] not in expected_cols and row[3] == 1)
+                    for row in pragma_rs.rows
+                )
+                if has_legacy_notnull:
+                    await client.execute("ALTER TABLE experiences RENAME TO experiences_legacy_backup")
+        except Exception as e:
+            logger.error(f"Schema check info: {e}")
+
         await client.execute("""
             CREATE TABLE IF NOT EXISTS experiences (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,7 +106,7 @@ async def init_db():
         await client.execute("""
             CREATE TABLE IF NOT EXISTS clinics (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE NOT NULL,
+                name TEXT NOT NULL,
                 address TEXT,
                 phone TEXT,
                 status TEXT DEFAULT 'approved'
@@ -99,6 +118,11 @@ async def init_db():
             except Exception:
                 pass
 
+        try:
+            await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_clinics_name ON clinics(name)")
+        except Exception:
+            pass
+
         default_clinics = [
             ("کلینیک هیمان", "مشهد - بلوار هاشمیه", "ثبت نشده"),
             ("کلینیک پناه", "مشهد - محدوده بلوار سجاد / احمدآباد", "ثبت نشده"),
@@ -106,10 +130,12 @@ async def init_db():
         ]
         for c_name, c_addr, c_phone in default_clinics:
             try:
-                await client.execute(
-                    "INSERT OR IGNORE INTO clinics (name, address, phone, status) VALUES (?, ?, ?, 'approved')",
-                    [c_name, c_addr, c_phone],
-                )
+                check_rs = await client.execute("SELECT id FROM clinics WHERE name = ?", [c_name])
+                if not check_rs.rows:
+                    await client.execute(
+                        "INSERT INTO clinics (name, address, phone, status) VALUES (?, ?, ?, 'approved')",
+                        [c_name, c_addr, c_phone],
+                    )
             except Exception:
                 pass
 
@@ -235,7 +261,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "ℹ️ **راهنمای استفاده از سروش**\n\n"
         "• **✍️ ثبت تجربه:** تجربه مثبت خود از جلسات درمان در مشهد را به صورت کاملاً ناشناس ثبت کنید. "
         "اطلاعات کلینیک، آدرس و شماره تماس پس از تایید به دکمه‌های ثابت ربات اضافه می‌شود.\n"
-        "• **🔍 جستجوی درمانگر:** بر اساس حوزه درمان، رویکرد درمانی، کلینیک، محله یا نام درمانگر جستجو کنید و به اطلاعات تماس کلینیک دسترسی داشته باشید.\n\n"
+        "• **🔍 جستجوی درمانگر:** بر اساس حوزه درمان (فردی، زوج، کودک...)، رویکرد درمانی (انسان‌گرا، وجودی، طرحواره، EFT...)، "
+        "کلینیک، محله یا نام درمانگر جستجو کنید و به اطلاعات تماس کلینیک دسترسی داشته باشید.\n\n"
         "📞 پشتیبانی: @Reza_saadatpour"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
@@ -454,18 +481,24 @@ async def save_experience(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     try:
         async with get_db() as client:
+            # ذخیره یا به‌روزرسانی امن کلینیک بدون وابستگی به ON CONFLICT
             if is_new_clinic and clinic_name not in ["مطب شخصی / نامشخص", "نامشخص"]:
-                await client.execute(
-                    """
-                    INSERT INTO clinics (name, address, phone, status)
-                    VALUES (?, ?, ?, 'pending')
-                    ON CONFLICT(name) DO UPDATE SET
-                        address = CASE WHEN excluded.address != 'ثبت نشده' THEN excluded.address ELSE clinics.address END,
-                        phone = CASE WHEN excluded.phone != 'ثبت نشده' THEN excluded.phone ELSE clinics.phone END,
-                        status = 'pending'
-                    """,
-                    [clinic_name, clinic_address, clinic_phone],
+                check_rs = await client.execute(
+                    "SELECT id, address, phone FROM clinics WHERE name = ?", [clinic_name]
                 )
+                if check_rs.rows:
+                    c_id, old_addr, old_phone = check_rs.rows[0]
+                    final_addr = clinic_address if clinic_address != "ثبت نشده" else (old_addr or "ثبت نشده")
+                    final_phone = clinic_phone if clinic_phone != "ثبت نشده" else (old_phone or "ثبت نشده")
+                    await client.execute(
+                        "UPDATE clinics SET address = ?, phone = ?, status = 'pending' WHERE id = ?",
+                        [final_addr, final_phone, c_id],
+                    )
+                else:
+                    await client.execute(
+                        "INSERT INTO clinics (name, address, phone, status) VALUES (?, ?, ?, 'pending')",
+                        [clinic_name, clinic_address, clinic_phone],
+                    )
 
             result = await client.execute(
                 """
@@ -486,7 +519,7 @@ async def save_experience(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     exp_text,
                 ],
             )
-            exp_id = result.last_insert_rowid
+            exp_id = result.last_insert_rowid or 1
 
         await update.message.reply_text(
             "✅ سپاس از همراهی شما! تجربه ارزشمندتان به صورت ناشناس ثبت شد و پس از تایید، در سامانه نمایش داده خواهد شد.",
@@ -527,7 +560,7 @@ async def save_experience(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except Exception as e:
         logger.error(f"Database error in save_experience: {e}")
         await update.message.reply_text(
-            "⚠️ خطایی در ذخیره‌سازی رخ داد. لطفاً دوباره /start را بزنید.",
+            f"⚠️ خطایی در ذخیره‌سازی رخ داد ({str(e)[:80]}). لطفاً دوباره /start را بزنید.",
             reply_markup=get_menu_keyboard(update.effective_user.id),
         )
 
