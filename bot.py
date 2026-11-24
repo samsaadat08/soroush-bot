@@ -707,4 +707,260 @@ async def select_search_type(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(
             "📍 محله مورد نظر را انتخاب کنید:",
             reply_markup=NEIGHBORHOOD_KEYBOARD,
-        
+        )
+    else:
+        return await show_search_results(update, context, column="all", query_str=choice)
+
+    return SEARCH_QUERY
+
+async def perform_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if text == BACK_BTN:
+        return await start(update, context)
+
+    mode = context.user_data.get("search_mode", "")
+    col_map = {
+        "👤 جستجو با نام درمانگر": "therapist_name",
+        "🏥 جستجو با کلینیک": "clinic_name",
+        "🎯 جستجو با حوزه درمان": "therapy_domain",
+        "🧠 جستجو با رویکرد": "approach",
+        "📍 جستجو با محله": "neighborhood",
+    }
+    column = col_map.get(mode, "all")
+    return await show_search_results(update, context, column=column, query_str=text)
+
+async def show_search_results(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, column: str | None, query_str: str | None
+) -> int:
+    try:
+        async with get_db() as client:
+            if not query_str:
+                rs = await client.execute(
+                    """
+                    SELECT therapist_name, clinic_name, clinic_address, clinic_phone,
+                           neighborhood, therapy_domain, approach, experience_text
+                    FROM experiences
+                    WHERE status = 'approved'
+                    ORDER BY id DESC LIMIT 10
+                    """
+                )
+            elif column and column != "all":
+                q = f"%{query_str}%"
+                rs = await client.execute(
+                    f"""
+                    SELECT therapist_name, clinic_name, clinic_address, clinic_phone,
+                           neighborhood, therapy_domain, approach, experience_text
+                    FROM experiences
+                    WHERE status = 'approved' AND {column} LIKE ?
+                    ORDER BY id DESC LIMIT 10
+                    """,
+                    [q],
+                )
+            else:
+                q = f"%{query_str}%"
+                rs = await client.execute(
+                    """
+                    SELECT therapist_name, clinic_name, clinic_address, clinic_phone,
+                           neighborhood, therapy_domain, approach, experience_text
+                    FROM experiences
+                    WHERE status = 'approved' AND (
+                        therapist_name LIKE ? OR
+                        clinic_name LIKE ? OR
+                        neighborhood LIKE ? OR
+                        therapy_domain LIKE ? OR
+                        approach LIKE ?
+                    )
+                    ORDER BY id DESC LIMIT 10
+                    """,
+                    [q, q, q, q, q],
+                )
+            rows = rs.rows
+
+        if not rows:
+            no_res_msg = """😔 هنوز تجربه‌ای مطابق با انتخاب شما ثبت نشده است.
+می‌توانید گزینه دیگری را امتحان کنید یا تجربه خود را ثبت نمایید."""
+            await update.message.reply_text(
+                no_res_msg,
+                reply_markup=get_menu_keyboard(update.effective_user.id),
+            )
+            return ConversationHandler.END
+
+        response = f"🔎 **نتایج یافت‌شده ({len(rows)} مورد):**\n\n"
+        for r in rows:
+            addr_line = f"\n🗺 **آدرس کلینیک:** {r[2]}" if r[2] and r[2] != "ثبت نشده" else ""
+            phone_line = f"\n☎️ **شماره تماس:** {r[3]}" if r[3] and r[3] != "ثبت نشده" else ""
+            response += (
+                f"👤 **درمانگر:** {r[0]}\n"
+                f"🏥 **کلینیک:** {r[1]} (📍 {r[4]}){addr_line}{phone_line}\n"
+                f"🎯 **حوزه درمان:** {r[5]} | 🧠 **رویکرد:** {r[6]}\n"
+                f"💬 **تجربه مراجع:** {r[7]}\n"
+                "────────────────────\n"
+            )
+
+        await update.message.reply_text(
+            response,
+            parse_mode="Markdown",
+            reply_markup=get_menu_keyboard(update.effective_user.id),
+        )
+    except Exception as e:
+        logger.error(f"Search error: {e}")
+        await update.message.reply_text(
+            "⚠️ خطایی در جستجو رخ داد. لطفاً دوباره تلاش کنید.",
+            reply_markup=get_menu_keyboard(update.effective_user.id),
+        )
+
+    return ConversationHandler.END
+
+# ---------------------------------------------------------
+# ۸. پنل مدیریت و تایید هم‌زمان تجربه، آدرس و تلفن کلینیک
+# ---------------------------------------------------------
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    async with get_db() as client:
+        rs = await client.execute(
+            """
+            SELECT id, therapist_name, clinic_name, clinic_address, clinic_phone,
+                   neighborhood, therapy_domain, approach, experience_text
+            FROM experiences WHERE status = 'pending'
+            """
+        )
+        pending = rs.rows
+
+    if not pending:
+        await update.message.reply_text(
+            "🎉 هیچ تجربه‌ای در صف انتظار نیست! همه چیز بررسی شده است.",
+            reply_markup=ADMIN_KEYBOARD,
+        )
+        return
+
+    for item in pending:
+        msg = f"""⏳ **در انتظار تایید (کد #{item[0]})**
+
+👤 درمانگر: {item[1]}
+🏥 کلینیک: {item[2]}
+🗺 آدرس: {item[3]} | ☎️ تلفن: {item[4]}
+📍 محله: {item[5]}
+🎯 حوزه: {item[6]} | 🧠 رویکرد: {item[7]}
+📝 متن: {item[8]}"""
+        kb = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("✅ تایید و انتشار", callback_data=f"approve_{item[0]}"),
+                    InlineKeyboardButton("❌ رد کردن", callback_data=f"reject_{item[0]}"),
+                ]
+            ]
+        )
+        await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=kb)
+
+async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    action, exp_id = query.data.split("_")
+    async with get_db() as client:
+        if action == "approve":
+            rs = await client.execute("SELECT clinic_name FROM experiences WHERE id = ?", [exp_id])
+            if rs.rows and rs.rows[0][0]:
+                c_name = rs.rows[0][0]
+                await client.execute("UPDATE clinics SET status = 'approved' WHERE name = ?", [c_name])
+
+            await client.execute("UPDATE experiences SET status = 'approved' WHERE id = ?", [exp_id])
+            await query.edit_message_text(
+                f"{query.message.text}\n\n✅ **تایید و منتشر شد (کلینیک، آدرس و تلفن نیز در سیستم ثبت شدند).**",
+                parse_mode="Markdown",
+            )
+        elif action == "reject":
+            await client.execute("UPDATE experiences SET status = 'rejected' WHERE id = ?", [exp_id])
+            await query.edit_message_text(
+                f"{query.message.text}\n\n❌ **رد شد.**", parse_mode="Markdown"
+            )
+
+# ---------------------------------------------------------
+# ۹. اجرای هم‌زمان وب‌سرور و Webhook تلگرام (مقاوم در برابر خطا)
+# ---------------------------------------------------------
+async def health_check(request):
+    return web.Response(text="Soroush Bot is running!", status=200)
+
+async def run_bot_and_server() -> None:
+    logger.info("Starting Soroush Bot initialization...")
+    await init_db()
+
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN environment variable is missing!")
+        return
+
+    application = Application.builder().token(BOT_TOKEN).build()
+
+    conv_handler = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.Regex("ثبت تجربه"), start_submit),
+            MessageHandler(filters.Regex("جستجوی درمانگر"), start_search),
+            MessageHandler(filters.Regex("راهنمای انتخاب آگاهانه درمانگر|راهنمای سروش"), open_guide_menu),
+        ],
+        states={
+            THERAPIST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_therapist_name)],
+            CLINIC_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_clinic)],
+            NEW_CLINIC_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_new_clinic_name)],
+            NEW_CLINIC_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_new_clinic_address)],
+            NEW_CLINIC_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_new_clinic_phone)],
+            CONFIRM_EXISTING_CLINIC: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_existing_clinic)],
+            NEIGHBORHOOD: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_neighborhood)],
+            THERAPY_DOMAIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_therapy_domain)],
+            APPROACH: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_approach)],
+            EXPERIENCE_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_experience)],
+            SEARCH_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_search_type)],
+            SEARCH_QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, perform_search)],
+            GUIDE_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_guide_topic)],
+        },
+        fallbacks=[
+            CommandHandler("start", start),
+            MessageHandler(filters.Regex("بازگشت به منوی اصلی"), start),
+        ],
+        allow_reentry=True,
+    )
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", open_guide_menu))
+    application.add_handler(MessageHandler(filters.Regex("پنل مدیریت و گزارش"), admin_panel))
+    application.add_handler(CallbackQueryHandler(handle_admin_callback))
+    application.add_handler(conv_handler)
+
+    webhook_path = f"/{BOT_TOKEN}"
+    webhook_url = f"{RENDER_EXTERNAL_URL.rstrip('/')}{webhook_path}"
+
+    async def telegram_webhook(request):
+        try:
+            data = await request.json()
+            update = Update.de_json(data, application.bot)
+            await application.process_update(update)
+        except Exception as e:
+            logger.error(f"Webhook update error: {e}")
+        return web.Response(text="OK", status=200)
+
+    app = web.Application()
+    app.router.add_get("/", health_check)
+    app.router.add_post(webhook_path, telegram_webhook)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    logger.info(f"Web server started on port {PORT}.")
+
+    try:
+        await application.initialize()
+        await application.start()
+        await application.bot.set_webhook(url=webhook_url)
+        logger.info("Telegram Webhook set and bot started successfully!")
+    except Exception as e:
+        logger.exception(f"Telegram startup warning: {e}")
+
+    await asyncio.Event().wait()
+
+if __name__ == "__main__":
+    asyncio.run(run_bot_and_server())
