@@ -44,7 +44,7 @@ RENDER_EXTERNAL_URL = os.environ.get(
 PORT = int(os.environ.get("PORT", "8080"))
 
 # ---------------------------------------------------------
-# ۳. اتصال ناهمزمان (Async) به دیتابیس Turso و همگام‌سازی کامل جداول
+# ۳. اتصال ناهمزمان (Async) به دیتابیس Turso و همگام‌سازی جداول
 # ---------------------------------------------------------
 def get_db():
     db_url = TURSO_DATABASE_URL.replace("libsql://", "https://")
@@ -55,7 +55,6 @@ def get_db():
 
 async def init_db():
     async with get_db() as client:
-        # بررسی وجود ستون‌های ناسازگار NOT NULL در جدول قدیمی experiences
         try:
             pragma_rs = await client.execute("PRAGMA table_info(experiences)")
             if pragma_rs.rows:
@@ -64,7 +63,6 @@ async def init_db():
                     "clinic_phone", "neighborhood", "therapy_domain",
                     "approach", "experience_text", "status", "created_at"
                 }
-                # اگر ستون قدیمی اجباری (notnull == 1) خارج از لیست جدید وجود داشت، جدول را مهاجرت می‌دهیم
                 has_legacy_notnull = any(
                     (row[1] not in expected_cols and row[3] == 1)
                     for row in pragma_rs.rows
@@ -155,14 +153,16 @@ async def init_db():
     EXPERIENCE_TEXT,
     SEARCH_TYPE,
     SEARCH_QUERY,
-) = range(12)
+    GUIDE_MENU,
+) = range(13)
 
 BACK_BTN = "🔙 بازگشت به منوی اصلی"
+GUIDE_BTN = "🧭 راهنمای انتخاب آگاهانه درمانگر"
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["✍️ ثبت تجربه", "🔍 جستجوی درمانگر"],
-        ["ℹ️ راهنمای سروش"],
+        [GUIDE_BTN],
     ],
     resize_keyboard=True,
 )
@@ -170,8 +170,19 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 ADMIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["✍️ ثبت تجربه", "🔍 جستجوی درمانگر"],
-        ["ℹ️ راهنمای سروش"],
+        [GUIDE_BTN],
         ["📊 پنل مدیریت و گزارش‌ها"],
+    ],
+    resize_keyboard=True,
+)
+
+GUIDE_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        ["⚖️ اخلاق حرفه‌ای و خطوط قرمز درمانگر"],
+        ["🎓 چک‌لیست انتخاب درمانگر حرفه‌ای"],
+        ["🧠 رویکردهای درمانی به زبان ساده"],
+        ["📖 سروش چطور کار می‌کند؟"],
+        [BACK_BTN],
     ],
     resize_keyboard=True,
 )
@@ -239,7 +250,7 @@ async def build_clinics_keyboard(include_add_new: bool = True) -> ReplyKeyboardM
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
 # ---------------------------------------------------------
-# ۵. دستورات پایه (/start و /help)
+# ۵. دستورات پایه (/start) و بخش آموزشی راهنمای انتخاب آگاهانه درمانگر
 # ---------------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
@@ -256,16 +267,63 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     )
     return ConversationHandler.END
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    help_text = (
-        "ℹ️ **راهنمای استفاده از سروش**\n\n"
-        "• **✍️ ثبت تجربه:** تجربه مثبت خود از جلسات درمان در مشهد را به صورت کاملاً ناشناس ثبت کنید. "
-        "اطلاعات کلینیک، آدرس و شماره تماس پس از تایید به دکمه‌های ثابت ربات اضافه می‌شود.\n"
-        "• **🔍 جستجوی درمانگر:** بر اساس حوزه درمان (فردی، زوج، کودک...)، رویکرد درمانی (انسان‌گرا، وجودی، طرحواره، EFT...)، "
-        "کلینیک، محله یا نام درمانگر جستجو کنید و به اطلاعات تماس کلینیک دسترسی داشته باشید.\n\n"
-        "📞 پشتیبانی: @Reza_saadatpour"
+async def open_guide_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text(
+        "🧭 **راهنمای انتخاب آگاهانه درمانگر**\n\n"
+        "انتخاب یک درمانگر خوب، مهم‌ترین قدم در مسیر رشد و حال خوب است. "
+        "برای اینکه با آگاهی کامل تصمیم بگیرید، یکی از موضوعات زیر را انتخاب کنید:",
+        parse_mode="Markdown",
+        reply_markup=GUIDE_KEYBOARD,
     )
-    await update.message.reply_text(help_text, parse_mode="Markdown")
+    return GUIDE_MENU
+
+async def handle_guide_topic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    choice = update.message.text.strip()
+    if choice == BACK_BTN:
+        return await start(update, context)
+
+    if "اخلاق حرفه‌ای" in choice:
+        text = (
+            "⚖️ **اخلاق حرفه‌ای و خطوط قرمز در اتاق درمان**\n\n"
+            "• **رازدارای مطلق:** تمام صحبت‌های شما در اتاق درمان کاملاً محرمانه است و بدون رضایت کتبی شما (مگر در موارد خطر جانی فوری) در اختیار هیچ‌کس حتی خانواده قرار نمی‌گیرد.\n"
+            "• **مرزبندی شفاف حرفه‌ای:** درمانگر متعهد، هیچ‌گونه رابطه دوستی، عاطفی، مالی یا خانوادگی خارج از چارچوب جلسات با مراجع برقرار نمی‌کند.\n"
+            "• **احترام و عدم قضاوت:** اتاق درمان جای سرزنش یا تحمیل عقاید شخصی درمانگر نیست؛ درمانگر به ارزش‌ها و استقلال شما در تصمیم‌گیری احترام می‌گذارد.\n"
+            "• **شفافیت در روند و هزینه:** مدت جلسه، هزینه و قواعد کنسلی باید از همان جلسه اول به صورت روشن به شما اعلام شود."
+        )
+    elif "چک‌لیست انتخاب" in choice:
+        text = (
+            "🎓 **چک‌لیست انتخاب یک درمانگر حرفه‌ای**\n\n"
+            "۱. **پروانه اشتغال تخصصی:** مطمئن شوید درمانگر دارای مدرک تحصیلی مرتبط، شماره نظام روانشناسی و پروانه کار معتبر از سازمان نظام روانشناسی است.\n"
+            "۲. **تناسب تخصص با مسئله شما:** هر درمانگری در حوزه‌های خاصی (فردی، زوج، کودک، خانواده و...) آموزش تخصصی دیده است؛ درمانگری را انتخاب کنید که متناسب با دغدغه فعلی شما باشد.\n"
+            "۳. **احساس امنیت و درک شدن (اتحاد درمانی):** پژوهش‌ها نشان می‌دهند مهم‌ترین عامل موفقیت درمان، احساس امنیت و همدلی در ۲ تا ۳ جلسه اول است. اگر احساس راحتی ندارید، تغییر درمانگر حق طبیعی شماست.\n"
+            "۴. **پرهیز از وعده‌های معجزه‌آسا:** تغییر روانی یک فرآیند تدریجی و مشترک است؛ از افرادی که وعده درمان قطعی در یک جلسه را می‌دهند فاصله بگیرید."
+        )
+    elif "رویکردهای درمانی" in choice:
+        text = (
+            "🧠 **آشنایی خیلی خلاصه با رویکردهای درمانی**\n\n"
+            "• **انسان‌گرا و وجودی:** تمرکز بر رشد فردی، شناخت خود واقعی، یافتن معنا، مسئولیت‌پذیری و تجربه «اینجا و اکنون» در فضایی صمیمی و بدون قضاوت.\n"
+            "• **شناختی-رفتاری (CBT):** شناسایی و اصلاح خطاهای فکری و رفتارهایی که باعث اضطراب، وسواس یا افسردگی می‌شوند (ساختارمند و تمرین‌محور).\n"
+            "• **طرحواره‌درمانی:** ریشه‌یابی «تله‌های زندگی» و الگوهای تکراری که از دوران کودکی شکل گرفته‌اند و در روابط و انتخاب‌های امروز تکرار می‌شوند.\n"
+            "• **متمرکز بر هیجان (EFT):** کمک به شناخت، تجربه و تنظیم هیجان‌های عمیق و ترمیم دلبستگی (بسیار موثر در زوج‌درمانی و روابط عاطفی).\n"
+            "• **روان‌پویشی کوتاه‌مدت و تحلیلی:** کاوش در تعارض‌های ناخودآگاه، دفاع‌های روانی و ریشه‌های عمیق هیجانی برای رسیدن به تغییرات پایدار.\n"
+            "• **پذیرش و تعهد (ACT):** آموزش پذیرش افکار و هیجان‌های دشوار به جای جنگیدن با آن‌ها و حرکت به سمت ارزش‌های مهم زندگی."
+        )
+    elif "سروش چطور" in choice:
+        text = (
+            "📖 **سروش چطور به شما کمک می‌کند؟**\n\n"
+            "• **✍️ ثبت تجربه ناشناس:** اگر تجربه مثبت و سازنده‌ای از جلسات درمان در مشهد داشته‌اید، می‌توانید بدون ثبت نام و هویت خودتان آن را ثبت کنید تا چراغ راه دیگران باشد.\n"
+            "• **🔍 جستجوی هوشمند:** بر اساس حوزه درمان، رویکرد، محله، کلینیک یا نام درمانگر جستجو کنید و علاوه بر خواندن تجربه واقعی مراجعان، به آدرس و شماره تماس کلینیک دسترسی داشته باشید.\n\n"
+            "📞 ارتباط با پشتیبانی: @Reza_saadatpour"
+        )
+    else:
+        text = "👇 لطفاً یکی از موضوعات زیر را انتخاب کنید:"
+
+    await update.message.reply_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=GUIDE_KEYBOARD,
+    )
+    return GUIDE_MENU
 
 # ---------------------------------------------------------
 # ۶. فرآیند گزینه‌ای ثبت تجربه جدید + سیستم هوشمند کلینیک، آدرس و تلفن
@@ -481,7 +539,6 @@ async def save_experience(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     try:
         async with get_db() as client:
-            # ذخیره یا به‌روزرسانی امن کلینیک بدون وابستگی به ON CONFLICT
             if is_new_clinic and clinic_name not in ["مطب شخصی / نامشخص", "نامشخص"]:
                 check_rs = await client.execute(
                     "SELECT id, address, phone FROM clinics WHERE name = ?", [clinic_name]
@@ -797,8 +854,9 @@ async def run_bot_and_server() -> None:
 
     conv_handler = ConversationHandler(
         entry_points=[
-            MessageHandler(filters.Regex("^✍️ ثبت تجربه$"), start_submit),
-            MessageHandler(filters.Regex("^🔍 جستجوی درمانگر$"), start_search),
+            MessageHandler(filters.Regex("ثبت تجربه"), start_submit),
+            MessageHandler(filters.Regex("جستجوی درمانگر"), start_search),
+            MessageHandler(filters.Regex("راهنمای انتخاب آگاهانه درمانگر|راهنمای سروش"), open_guide_menu),
         ],
         states={
             THERAPIST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_therapist_name)],
@@ -813,18 +871,18 @@ async def run_bot_and_server() -> None:
             EXPERIENCE_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_experience)],
             SEARCH_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_search_type)],
             SEARCH_QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, perform_search)],
+            GUIDE_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_guide_topic)],
         },
         fallbacks=[
             CommandHandler("start", start),
-            MessageHandler(filters.Regex(f"^{BACK_BTN}$"), start),
+            MessageHandler(filters.Regex("بازگشت به منوی اصلی"), start),
         ],
         allow_reentry=True,
     )
 
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(MessageHandler(filters.Regex("^ℹ️ راهنمای سروش$"), help_command))
-    application.add_handler(MessageHandler(filters.Regex("^📊 پنل مدیریت و گزارش‌ها$"), admin_panel))
+    application.add_handler(CommandHandler("help", open_guide_menu))
+    application.add_handler(MessageHandler(filters.Regex("پنل مدیریت و گزارش"), admin_panel))
     application.add_handler(CallbackQueryHandler(handle_admin_callback))
     application.add_handler(conv_handler)
 
