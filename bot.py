@@ -1,7 +1,10 @@
 import os
+import io
 import sys
+import json
 import asyncio
 import logging
+from datetime import datetime
 from aiohttp import web
 import libsql_client
 from telegram import (
@@ -147,7 +150,7 @@ async def init_db():
         logger.exception(f"Database init error (continuing startup): {e}")
 
 # ---------------------------------------------------------
-# ۴. تعریف مراحل گفتگو و کیبوردهای گزینه‌ای
+# ۴. تعریف مراحل گفتگو، لیست‌های استاندارد و کیبوردهای گزینه‌ای
 # ---------------------------------------------------------
 (
     THERAPIST_NAME,
@@ -167,6 +170,42 @@ async def init_db():
 
 BACK_BTN = "🔙 بازگشت به منوی اصلی"
 GUIDE_BTN = "🧭 راهنمای انتخاب آگاهانه درمانگر"
+BACKUP_BTN = "📥 دریافت فایل پشتیبان (Backup)"
+
+ALLOWED_NEIGHBORHOODS = [
+    "بلوار سجاد",
+    "وکیل‌آباد",
+    "احمدآباد",
+    "فلسطین و ملک‌آباد",
+    "هاشمیه",
+    "کوهسنگی",
+    "معلم و دانشجو",
+    "قاسم‌آباد و الهیه",
+    "سایر مناطق مشهد",
+]
+
+ALLOWED_DOMAINS = [
+    "فردی بزرگسال",
+    "زوج‌درمانی",
+    "خانواده درمانی",
+    "کودک و نوجوان",
+    "گروه درمانی",
+    "مشاوره پیش از ازدواج",
+    "تحصیلی و شغلی",
+    "سایر حوزه‌ها",
+]
+
+ALLOWED_APPROACHES = [
+    "انسان‌گرا",
+    "وجودی",
+    "شناختی-رفتاری (CBT)",
+    "طرحواره‌درمانی",
+    "متمرکز بر هیجان (EFT)",
+    "روان‌پویشی کوتاه‌مدت",
+    "پذیرش و تعهد (ACT)",
+    "روانکاوی و تحلیلی",
+    "سایر رویکردها / نامشخص",
+]
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
@@ -180,7 +219,7 @@ ADMIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["✍️ ثبت تجربه", "🔍 جستجوی درمانگر"],
         [GUIDE_BTN],
-        ["📊 پنل مدیریت و گزارش‌ها"],
+        ["📊 پنل مدیریت و گزارش‌ها", BACKUP_BTN],
     ],
     resize_keyboard=True,
 )
@@ -199,8 +238,9 @@ GUIDE_KEYBOARD = ReplyKeyboardMarkup(
 NEIGHBORHOOD_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["بلوار سجاد", "وکیل‌آباد", "احمدآباد"],
-        ["هاشمیه", "کوهسنگی", "معلم و دانشجو"],
-        ["قاسم‌آباد و الهیه", "سایر مناطق مشهد"],
+        ["فلسطین و ملک‌آباد", "هاشمیه", "کوهسنگی"],
+        ["معلم و دانشجو", "قاسم‌آباد و الهیه"],
+        ["سایر مناطق مشهد"],
         [BACK_BTN],
     ],
     resize_keyboard=True,
@@ -242,17 +282,18 @@ SEARCH_TYPE_KEYBOARD = ReplyKeyboardMarkup(
 def get_menu_keyboard(user_id: int):
     return ADMIN_KEYBOARD if user_id == ADMIN_ID else MAIN_KEYBOARD
 
-async def build_clinics_keyboard(include_add_new: bool = True) -> ReplyKeyboardMarkup:
-    buttons = []
+async def get_approved_clinic_names() -> list[str]:
     try:
         async with get_db() as client:
             rs = await client.execute("SELECT name FROM clinics WHERE status = 'approved' ORDER BY id ASC")
-            clinic_names = [row[0] for row in rs.rows]
-            for i in range(0, len(clinic_names), 2):
-                buttons.append(clinic_names[i : i + 2])
+            return [row[0] for row in rs.rows]
     except Exception as e:
         logger.error(f"Error loading clinics: {e}")
+        return []
 
+async def build_clinics_keyboard(include_add_new: bool = True) -> ReplyKeyboardMarkup:
+    clinic_names = await get_approved_clinic_names()
+    buttons = [clinic_names[i : i + 2] for i in range(0, len(clinic_names), 2)]
     if include_add_new:
         buttons.append(["➕ ثبت کلینیک جدید", "مطب شخصی / نامشخص"])
     buttons.append([BACK_BTN])
@@ -374,8 +415,12 @@ async def start_submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def get_therapist_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip()
-    if text == BACK_BTN:
+    if "بازگشت به منوی اصلی" in text:
         return await start(update, context)
+
+    if len(text) < 3:
+        await update.message.reply_text("⚠️ لطفاً نام و نام خانوادگی درمانگر را کامل‌تر وارد کنید:")
+        return THERAPIST_NAME
 
     context.user_data["therapist_name"] = text
     kb = await build_clinics_keyboard(include_add_new=True)
@@ -387,7 +432,7 @@ async def get_therapist_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def select_clinic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip()
-    if text == BACK_BTN:
+    if "بازگشت به منوی اصلی" in text:
         return await start(update, context)
 
     if text == "➕ ثبت کلینیک جدید":
@@ -400,13 +445,24 @@ async def select_clinic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     if text == "مطب شخصی / نامشخص":
         context.user_data["clinic_name"] = "مطب شخصی / نامشخص"
-        context.user_data["clinic_address"] = "ثبت نشده"
-        context.user_data["clinic_phone"] = "ثبت نشده"
+        context.user_data["is_new_clinic"] = False
         await update.message.reply_text(
-            "📍 محله یا محدوده کلینیک/مطب در مشهد را انتخاب کنید:",
-            reply_markup=NEIGHBORHOOD_KEYBOARD,
+            "🗺 آدرس مطب شخصی را بنویسید (مثال: خیابان فلسطین، فلسطین ۶) یا دکمه رد کردن را بزنید:",
+            reply_markup=ReplyKeyboardMarkup(
+                [["⏭ رد کردن آدرس"], [BACK_BTN]],
+                resize_keyboard=True,
+            ),
         )
-        return NEIGHBORHOOD
+        return NEW_CLINIC_ADDRESS
+
+    approved_clinics = await get_approved_clinic_names()
+    if text not in approved_clinics:
+        kb = await build_clinics_keyboard(include_add_new=True)
+        await update.message.reply_text(
+            "⚠️ لطفاً نام کلینیک را از دکمه‌های زیر انتخاب کنید یا گزینه «➕ ثبت کلینیک جدید» را بزنید:",
+            reply_markup=kb,
+        )
+        return CLINIC_SELECT
 
     context.user_data["clinic_name"] = text
     existing_address = None
@@ -461,7 +517,7 @@ async def select_clinic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 async def get_new_clinic_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip()
-    if text == BACK_BTN:
+    if "بازگشت به منوی اصلی" in text:
         return await start(update, context)
 
     context.user_data["clinic_name"] = text
@@ -477,11 +533,11 @@ async def get_new_clinic_name(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def get_new_clinic_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip()
-    if text == BACK_BTN:
+    if "بازگشت به منوی اصلی" in text:
         return await start(update, context)
 
     context.user_data["clinic_address"] = "ثبت نشده" if text == "⏭ رد کردن آدرس" else text
-    clinic_name = context.user_data.get("clinic_name", "کلینیک")
+    clinic_name = context.user_data.get("clinic_name", "کلینیک / مطب")
     await update.message.reply_text(
         f"☎️ شماره تلفن پذیرش یا نوبت‌دهی **{clinic_name}** را بنویسید (مثال: 05137654321):",
         parse_mode="Markdown",
@@ -494,19 +550,19 @@ async def get_new_clinic_address(update: Update, context: ContextTypes.DEFAULT_T
 
 async def get_new_clinic_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip()
-    if text == BACK_BTN:
+    if "بازگشت به منوی اصلی" in text:
         return await start(update, context)
 
     context.user_data["clinic_phone"] = "ثبت نشده" if text == "⏭ رد کردن شماره تلفن" else text
     await update.message.reply_text(
-        "📍 محله یا محدوده کلینیک در مشهد را از گزینه‌های زیر انتخاب کنید:",
+        "📍 محله یا محدوده کلینیک/مطب در مشهد را از دکمه‌های زیر انتخاب کنید:",
         reply_markup=NEIGHBORHOOD_KEYBOARD,
     )
     return NEIGHBORHOOD
 
 async def confirm_existing_clinic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip()
-    if text == BACK_BTN:
+    if "بازگشت به منوی اصلی" in text:
         return await start(update, context)
 
     if text == "✏️ تکمیل / اصلاح آدرس و تلفن":
@@ -521,15 +577,22 @@ async def confirm_existing_clinic(update: Update, context: ContextTypes.DEFAULT_
         return NEW_CLINIC_ADDRESS
 
     await update.message.reply_text(
-        "📍 محله یا محدوده کلینیک در مشهد را انتخاب کنید:",
+        "📍 محله یا محدوده کلینیک در مشهد را از دکمه‌های زیر انتخاب کنید:",
         reply_markup=NEIGHBORHOOD_KEYBOARD,
     )
     return NEIGHBORHOOD
 
 async def get_neighborhood(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip()
-    if text == BACK_BTN:
+    if "بازگشت به منوی اصلی" in text:
         return await start(update, context)
+
+    if text not in ALLOWED_NEIGHBORHOODS:
+        await update.message.reply_text(
+            "⚠️ لطفاً محله را فقط از روی دکمه‌های زیر انتخاب کنید (اگر در لیست نیست، گزینه «سایر مناطق مشهد» را بزنید):",
+            reply_markup=NEIGHBORHOOD_KEYBOARD,
+        )
+        return NEIGHBORHOOD
 
     context.user_data["neighborhood"] = text
     await update.message.reply_text(
@@ -541,8 +604,15 @@ async def get_neighborhood(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def get_therapy_domain(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip()
-    if text == BACK_BTN:
+    if "بازگشت به منوی اصلی" in text:
         return await start(update, context)
+
+    if text not in ALLOWED_DOMAINS:
+        await update.message.reply_text(
+            "⚠️ لطفاً حوزه درمان را از دکمه‌های زیر انتخاب کنید:",
+            reply_markup=DOMAIN_KEYBOARD,
+        )
+        return THERAPY_DOMAIN
 
     context.user_data["therapy_domain"] = text
     await update.message.reply_text(
@@ -554,8 +624,15 @@ async def get_therapy_domain(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def get_approach(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip()
-    if text == BACK_BTN:
+    if "بازگشت به منوی اصلی" in text:
         return await start(update, context)
+
+    if text not in ALLOWED_APPROACHES:
+        await update.message.reply_text(
+            "⚠️ لطفاً رویکرد درمانی را از دکمه‌های زیر انتخاب کنید (یا «سایر رویکردها / نامشخص» را بزنید):",
+            reply_markup=APPROACH_KEYBOARD,
+        )
+        return APPROACH
 
     context.user_data["approach"] = text
     await update.message.reply_text(
@@ -566,7 +643,7 @@ async def get_approach(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def save_experience(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     exp_text = update.message.text.strip()
-    if exp_text == BACK_BTN:
+    if "بازگشت به منوی اصلی" in exp_text:
         return await start(update, context)
 
     data = context.user_data
@@ -663,7 +740,7 @@ async def save_experience(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return ConversationHandler.END
 
 # ---------------------------------------------------------
-# ۷. فرآیند گزینه‌ای جستجوی درمانگر
+# ۷. فرآیند گزینه‌ای جستجوی درمانگر (با تکمیل خودکار اطلاعات کلینیک و جلوگیری از پیام طولانی)
 # ---------------------------------------------------------
 async def start_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
@@ -674,7 +751,7 @@ async def start_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def select_search_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     choice = update.message.text.strip()
-    if choice == BACK_BTN:
+    if "بازگشت به منوی اصلی" in choice:
         return await start(update, context)
 
     if choice == "📋 آخرین تجربه‌های ثبت‌شده":
@@ -715,7 +792,7 @@ async def select_search_type(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def perform_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip()
-    if text == BACK_BTN:
+    if "بازگشت به منوی اصلی" in text:
         return await start(update, context)
 
     mode = context.user_data.get("search_mode", "")
@@ -734,44 +811,33 @@ async def show_search_results(
 ) -> int:
     try:
         async with get_db() as client:
+            base_sql = """
+                SELECT e.therapist_name, e.clinic_name,
+                       COALESCE(NULLIF(e.clinic_address, 'ثبت نشده'), c.address, 'ثبت نشده'),
+                       COALESCE(NULLIF(e.clinic_phone, 'ثبت نشده'), c.phone, 'ثبت نشده'),
+                       e.neighborhood, e.therapy_domain, e.approach, e.experience_text
+                FROM experiences e
+                LEFT JOIN clinics c ON e.clinic_name = c.name
+                WHERE e.status = 'approved'
+            """
             if not query_str:
-                rs = await client.execute(
-                    """
-                    SELECT therapist_name, clinic_name, clinic_address, clinic_phone,
-                           neighborhood, therapy_domain, approach, experience_text
-                    FROM experiences
-                    WHERE status = 'approved'
-                    ORDER BY id DESC LIMIT 10
-                    """
-                )
+                rs = await client.execute(f"{base_sql} ORDER BY e.id DESC LIMIT 6")
             elif column and column != "all":
                 q = f"%{query_str}%"
                 rs = await client.execute(
-                    f"""
-                    SELECT therapist_name, clinic_name, clinic_address, clinic_phone,
-                           neighborhood, therapy_domain, approach, experience_text
-                    FROM experiences
-                    WHERE status = 'approved' AND {column} LIKE ?
-                    ORDER BY id DESC LIMIT 10
-                    """,
+                    f"{base_sql} AND e.{column} LIKE ? ORDER BY e.id DESC LIMIT 6",
                     [q],
                 )
             else:
                 q = f"%{query_str}%"
                 rs = await client.execute(
-                    """
-                    SELECT therapist_name, clinic_name, clinic_address, clinic_phone,
-                           neighborhood, therapy_domain, approach, experience_text
-                    FROM experiences
-                    WHERE status = 'approved' AND (
-                        therapist_name LIKE ? OR
-                        clinic_name LIKE ? OR
-                        neighborhood LIKE ? OR
-                        therapy_domain LIKE ? OR
-                        approach LIKE ?
-                    )
-                    ORDER BY id DESC LIMIT 10
-                    """,
+                    f"""{base_sql} AND (
+                        e.therapist_name LIKE ? OR
+                        e.clinic_name LIKE ? OR
+                        e.neighborhood LIKE ? OR
+                        e.therapy_domain LIKE ? OR
+                        e.approach LIKE ?
+                    ) ORDER BY e.id DESC LIMIT 6""",
                     [q, q, q, q, q],
                 )
             rows = rs.rows
@@ -785,17 +851,20 @@ async def show_search_results(
             )
             return ConversationHandler.END
 
-        response = f"🔎 **نتایج یافت‌شده ({len(rows)} مورد):**\n\n"
+        response = f"🔎 **نتایج یافت‌شده ({len(rows)} مورد اخیر):**\n\n"
         for r in rows:
             addr_line = f"\n🗺 **آدرس کلینیک:** {r[2]}" if r[2] and r[2] != "ثبت نشده" else ""
             phone_line = f"\n☎️ **شماره تماس:** {r[3]}" if r[3] and r[3] != "ثبت نشده" else ""
-            response += (
+            block = (
                 f"👤 **درمانگر:** {r[0]}\n"
                 f"🏥 **کلینیک:** {r[1]} (📍 {r[4]}){addr_line}{phone_line}\n"
                 f"🎯 **حوزه درمان:** {r[5]} | 🧠 **رویکرد:** {r[6]}\n"
                 f"💬 **تجربه مراجع:** {r[7]}\n"
                 "────────────────────\n"
             )
+            if len(response) + len(block) > 3900:
+                break
+            response += block
 
         await update.message.reply_text(
             response,
@@ -812,13 +881,16 @@ async def show_search_results(
     return ConversationHandler.END
 
 # ---------------------------------------------------------
-# ۸. پنل مدیریت و تایید هم‌زمان تجربه، آدرس و تلفن کلینیک
+# ۸. پنل مدیریت، تایید تجربه‌ها و دریافت فایل پشتیبان (Backup)
 # ---------------------------------------------------------
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id != ADMIN_ID:
         return
 
     async with get_db() as client:
+        count_rs = await client.execute("SELECT COUNT(*) FROM experiences WHERE status = 'approved'")
+        approved_count = count_rs.rows[0][0] if count_rs.rows else 0
+
         rs = await client.execute(
             """
             SELECT id, therapist_name, clinic_name, clinic_address, clinic_phone,
@@ -830,7 +902,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if not pending:
         await update.message.reply_text(
-            "🎉 هیچ تجربه‌ای در صف انتظار نیست! همه چیز بررسی شده است.",
+            f"🎉 هیچ تجربه‌ای در صف انتظار نیست!\n📚 تعداد کل تجربه‌های تاییدشده و محفوظ در دیتابیس: {approved_count} مورد.",
             reply_markup=ADMIN_KEYBOARD,
         )
         return
@@ -853,6 +925,67 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             ]
         )
         await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=kb)
+
+async def export_backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    try:
+        async with get_db() as client:
+            exp_rs = await client.execute(
+                """
+                SELECT id, therapist_name, clinic_name, clinic_address, clinic_phone,
+                       neighborhood, therapy_domain, approach, experience_text, status, created_at
+                FROM experiences ORDER BY id ASC
+                """
+            )
+            clinics_rs = await client.execute(
+                "SELECT id, name, address, phone, status FROM clinics ORDER BY id ASC"
+            )
+
+        backup_data = {
+            "exported_at": datetime.utcnow().isoformat(),
+            "total_experiences": len(exp_rs.rows),
+            "experiences": [
+                {
+                    "id": r[0],
+                    "therapist_name": r[1],
+                    "clinic_name": r[2],
+                    "clinic_address": r[3],
+                    "clinic_phone": r[4],
+                    "neighborhood": r[5],
+                    "therapy_domain": r[6],
+                    "approach": r[7],
+                    "experience_text": r[8],
+                    "status": r[9],
+                    "created_at": r[10],
+                }
+                for r in exp_rs.rows
+            ],
+            "clinics": [
+                {
+                    "id": c[0],
+                    "name": c[1],
+                    "address": c[2],
+                    "phone": c[3],
+                    "status": c[4],
+                }
+                for c in clinics_rs.rows
+            ],
+        }
+
+        json_bytes = json.dumps(backup_data, ensure_ascii=False, indent=2).encode("utf-8")
+        bio = io.BytesIO(json_bytes)
+        bio.name = f"soroush_backup_{datetime.now().strftime('%Y%m%d_%H%M')}.json"
+
+        await update.message.reply_document(
+            document=bio,
+            caption=f"📦 فایل پشتیبان کامل دیتابیس سروش\n✅ تعداد کل تجربه‌های ثبت‌شده: {len(exp_rs.rows)} مورد",
+            reply_markup=ADMIN_KEYBOARD,
+        )
+    except Exception as e:
+        logger.error(f"Backup export error: {e}")
+        await update.message.reply_text("⚠️ خطا در تهیه فایل پشتیبان.")
 
 async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
@@ -881,7 +1014,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             )
 
 # ---------------------------------------------------------
-# ۹. اجرای هم‌زمان وب‌سرور و Webhook تلگرام (مقاوم در برابر خطا)
+# ۹. اجرای هم‌زمان وب‌سرور و Webhook تلگرام (مقاوم در برابر ری‌استارت)
 # ---------------------------------------------------------
 async def health_check(request):
     return web.Response(text="Soroush Bot is running!", status=200)
@@ -926,9 +1059,18 @@ async def run_bot_and_server() -> None:
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", open_guide_menu))
+    application.add_handler(MessageHandler(filters.Regex("بازگشت به منوی اصلی"), start))
     application.add_handler(MessageHandler(filters.Regex("پنل مدیریت و گزارش"), admin_panel))
+    application.add_handler(MessageHandler(filters.Regex("دریافت فایل پشتیبان"), export_backup))
     application.add_handler(CallbackQueryHandler(handle_admin_callback))
     application.add_handler(conv_handler)
+    # هندلرهای سراسری برای دکمه‌های راهنما (فعال حتی پس از ری‌استارت سرور)
+    application.add_handler(
+        MessageHandler(
+            filters.Regex("اخلاق حرفه‌ای|چک‌لیست انتخاب|رویکردهای درمانی|نحوه کار با ربات"),
+            handle_guide_topic,
+        )
+    )
 
     webhook_path = f"/{BOT_TOKEN}"
     webhook_url = f"{RENDER_EXTERNAL_URL.rstrip('/')}{webhook_path}"
