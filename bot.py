@@ -1,4 +1,5 @@
 import os
+import sys
 import asyncio
 import logging
 from aiohttp import web
@@ -20,11 +21,12 @@ from telegram.ext import (
 )
 
 # ---------------------------------------------------------
-# ۱. تنظیمات لاگ‌گیری (مخفی‌سازی کامل توکن ربات در لاگ‌های Render)
+# ۱. تنظیمات لاگ‌گیری آنی (بدون بافر و بدون نمایش توکن)
 # ---------------------------------------------------------
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
+    stream=sys.stdout,
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("telegram").setLevel(logging.WARNING)
@@ -34,14 +36,14 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------
 # ۲. خواندن متغیرهای محیطی از Render
 # ---------------------------------------------------------
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL", "")
-TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
+TURSO_DATABASE_URL = os.environ.get("TURSO_DATABASE_URL", "").strip()
+TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN", "").strip()
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "0") or "0")
 RENDER_EXTERNAL_URL = os.environ.get(
     "RENDER_EXTERNAL_URL", "https://soroush-bot-w2q5.onrender.com"
-)
-PORT = int(os.environ.get("PORT", "8080"))
+).strip()
+PORT = int(os.environ.get("PORT", "8080") or "8080")
 
 # ---------------------------------------------------------
 # ۳. اتصال ناهمزمان (Async) به دیتابیس Turso و همگام‌سازی جداول
@@ -54,88 +56,95 @@ def get_db():
     )
 
 async def init_db():
-    async with get_db() as client:
-        try:
-            pragma_rs = await client.execute("PRAGMA table_info(experiences)")
-            if pragma_rs.rows:
-                expected_cols = {
-                    "id", "therapist_name", "clinic_name", "clinic_address",
-                    "clinic_phone", "neighborhood", "therapy_domain",
-                    "approach", "experience_text", "status", "created_at"
-                }
-                has_legacy_notnull = any(
-                    (row[1] not in expected_cols and row[3] == 1)
-                    for row in pragma_rs.rows
-                )
-                if has_legacy_notnull:
-                    await client.execute("ALTER TABLE experiences RENAME TO experiences_legacy_backup")
-        except Exception as e:
-            logger.error(f"Schema check info: {e}")
-
-        await client.execute("""
-            CREATE TABLE IF NOT EXISTS experiences (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                therapist_name TEXT NOT NULL,
-                clinic_name TEXT,
-                clinic_address TEXT,
-                clinic_phone TEXT,
-                neighborhood TEXT,
-                therapy_domain TEXT,
-                approach TEXT,
-                experience_text TEXT NOT NULL,
-                status TEXT DEFAULT 'pending',
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        for col in [
-            "clinic_name",
-            "clinic_address",
-            "clinic_phone",
-            "neighborhood",
-            "therapy_domain",
-            "approach",
-            "status",
-        ]:
+    if not TURSO_DATABASE_URL:
+        logger.error("TURSO_DATABASE_URL is missing!")
+        return
+    try:
+        async with get_db() as client:
             try:
-                await client.execute(f"ALTER TABLE experiences ADD COLUMN {col} TEXT")
-            except Exception:
-                pass
-
-        await client.execute("""
-            CREATE TABLE IF NOT EXISTS clinics (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                address TEXT,
-                phone TEXT,
-                status TEXT DEFAULT 'approved'
-            )
-        """)
-        for col in ["address", "phone", "status"]:
-            try:
-                await client.execute(f"ALTER TABLE clinics ADD COLUMN {col} TEXT")
-            except Exception:
-                pass
-
-        try:
-            await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_clinics_name ON clinics(name)")
-        except Exception:
-            pass
-
-        default_clinics = [
-            ("کلینیک هیمان", "مشهد - بلوار هاشمیه", "ثبت نشده"),
-            ("کلینیک پناه", "مشهد - محدوده بلوار سجاد / احمدآباد", "ثبت نشده"),
-            ("پلی‌کلینیک دانشگاه فردوسی", "مشهد - پردیس دانشگاه فردوسی", "ثبت نشده"),
-        ]
-        for c_name, c_addr, c_phone in default_clinics:
-            try:
-                check_rs = await client.execute("SELECT id FROM clinics WHERE name = ?", [c_name])
-                if not check_rs.rows:
-                    await client.execute(
-                        "INSERT INTO clinics (name, address, phone, status) VALUES (?, ?, ?, 'approved')",
-                        [c_name, c_addr, c_phone],
+                pragma_rs = await client.execute("PRAGMA table_info(experiences)")
+                if pragma_rs.rows:
+                    expected_cols = {
+                        "id", "therapist_name", "clinic_name", "clinic_address",
+                        "clinic_phone", "neighborhood", "therapy_domain",
+                        "approach", "experience_text", "status", "created_at"
+                    }
+                    has_legacy_notnull = any(
+                        (row[1] not in expected_cols and row[3] == 1)
+                        for row in pragma_rs.rows
                     )
+                    if has_legacy_notnull:
+                        await client.execute("ALTER TABLE experiences RENAME TO experiences_legacy_backup")
+            except Exception as e:
+                logger.warning(f"Schema check notice: {e}")
+
+            await client.execute("""
+                CREATE TABLE IF NOT EXISTS experiences (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    therapist_name TEXT NOT NULL,
+                    clinic_name TEXT,
+                    clinic_address TEXT,
+                    clinic_phone TEXT,
+                    neighborhood TEXT,
+                    therapy_domain TEXT,
+                    approach TEXT,
+                    experience_text TEXT NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            for col in [
+                "clinic_name",
+                "clinic_address",
+                "clinic_phone",
+                "neighborhood",
+                "therapy_domain",
+                "approach",
+                "status",
+            ]:
+                try:
+                    await client.execute(f"ALTER TABLE experiences ADD COLUMN {col} TEXT")
+                except Exception:
+                    pass
+
+            await client.execute("""
+                CREATE TABLE IF NOT EXISTS clinics (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    address TEXT,
+                    phone TEXT,
+                    status TEXT DEFAULT 'approved'
+                )
+            """)
+            for col in ["address", "phone", "status"]:
+                try:
+                    await client.execute(f"ALTER TABLE clinics ADD COLUMN {col} TEXT")
+                except Exception:
+                    pass
+
+            try:
+                await client.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_clinics_name ON clinics(name)")
             except Exception:
                 pass
+
+            default_clinics = [
+                ("کلینیک هیمان", "مشهد - بلوار هاشمیه", "ثبت نشده"),
+                ("کلینیک پناه", "مشهد - محدوده بلوار سجاد / احمدآباد", "ثبت نشده"),
+                ("پلی‌کلینیک دانشگاه فردوسی", "مشهد - پردیس دانشگاه فردوسی", "ثبت نشده"),
+            ]
+            for c_name, c_addr, c_phone in default_clinics:
+                try:
+                    check_rs = await client.execute("SELECT id FROM clinics WHERE name = ?", [c_name])
+                    if not check_rs.rows:
+                        await client.execute(
+                            "INSERT INTO clinics (name, address, phone, status) VALUES (?, ?, ?, 'approved')",
+                            [c_name, c_addr, c_phone],
+                        )
+                except Exception:
+                    pass
+        logger.info("Database initialized successfully.")
+    except Exception as e:
+        logger.exception(f"Database init error (continuing startup): {e}")
 
 # ---------------------------------------------------------
 # ۴. تعریف مراحل گفتگو و کیبوردهای گزینه‌ای
@@ -467,4 +476,235 @@ async def get_new_clinic_name(update: Update, context: ContextTypes.DEFAULT_TYPE
     return NEW_CLINIC_ADDRESS
 
 async def get_new_clinic_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = update.message
+    text = update.message.text.strip()
+    if text == BACK_BTN:
+        return await start(update, context)
+
+    context.user_data["clinic_address"] = "ثبت نشده" if text == "⏭ رد کردن آدرس" else text
+    clinic_name = context.user_data.get("clinic_name", "کلینیک")
+    await update.message.reply_text(
+        f"☎️ شماره تلفن پذیرش یا نوبت‌دهی **{clinic_name}** را بنویسید (مثال: 05137654321):",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup(
+            [["⏭ رد کردن شماره تلفن"], [BACK_BTN]],
+            resize_keyboard=True,
+        ),
+    )
+    return NEW_CLINIC_PHONE
+
+async def get_new_clinic_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if text == BACK_BTN:
+        return await start(update, context)
+
+    context.user_data["clinic_phone"] = "ثبت نشده" if text == "⏭ رد کردن شماره تلفن" else text
+    await update.message.reply_text(
+        "📍 محله یا محدوده کلینیک در مشهد را از گزینه‌های زیر انتخاب کنید:",
+        reply_markup=NEIGHBORHOOD_KEYBOARD,
+    )
+    return NEIGHBORHOOD
+
+async def confirm_existing_clinic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if text == BACK_BTN:
+        return await start(update, context)
+
+    if text == "✏️ تکمیل / اصلاح آدرس و تلفن":
+        context.user_data["is_new_clinic"] = True
+        await update.message.reply_text(
+            "🗺 آدرس جدید یا تکمیلی کلینیک را بنویسید:",
+            reply_markup=ReplyKeyboardMarkup(
+                [["⏭ رد کردن آدرس"], [BACK_BTN]],
+                resize_keyboard=True,
+            ),
+        )
+        return NEW_CLINIC_ADDRESS
+
+    await update.message.reply_text(
+        "📍 محله یا محدوده کلینیک در مشهد را انتخاب کنید:",
+        reply_markup=NEIGHBORHOOD_KEYBOARD,
+    )
+    return NEIGHBORHOOD
+
+async def get_neighborhood(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if text == BACK_BTN:
+        return await start(update, context)
+
+    context.user_data["neighborhood"] = text
+    await update.message.reply_text(
+        "🎯 **حوزه درمان** شما در جلسات چه بوده است؟ از گزینه‌های زیر انتخاب کنید:",
+        parse_mode="Markdown",
+        reply_markup=DOMAIN_KEYBOARD,
+    )
+    return THERAPY_DOMAIN
+
+async def get_therapy_domain(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if text == BACK_BTN:
+        return await start(update, context)
+
+    context.user_data["therapy_domain"] = text
+    await update.message.reply_text(
+        "🧠 **رویکرد درمانی** درمانگر چه بوده است؟ از گزینه‌های زیر انتخاب کنید:",
+        parse_mode="Markdown",
+        reply_markup=APPROACH_KEYBOARD,
+    )
+    return APPROACH
+
+async def get_approach(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if text == BACK_BTN:
+        return await start(update, context)
+
+    context.user_data["approach"] = text
+    await update.message.reply_text(
+        "📝 تجربه مثبت و سازنده خود را از روند درمان با این درمانگر بنویسید (هویت شما کاملاً ناشناس می‌ماند):",
+        reply_markup=ReplyKeyboardMarkup([[BACK_BTN]], resize_keyboard=True),
+    )
+    return EXPERIENCE_TEXT
+
+async def save_experience(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    exp_text = update.message.text.strip()
+    if exp_text == BACK_BTN:
+        return await start(update, context)
+
+    data = context.user_data
+    clinic_name = data.get("clinic_name", "نامشخص")
+    clinic_address = data.get("clinic_address", "ثبت نشده")
+    clinic_phone = data.get("clinic_phone", "ثبت نشده")
+    is_new_clinic = data.get("is_new_clinic", False)
+
+    try:
+        async with get_db() as client:
+            if is_new_clinic and clinic_name not in ["مطب شخصی / نامشخص", "نامشخص"]:
+                check_rs = await client.execute(
+                    "SELECT id, address, phone FROM clinics WHERE name = ?", [clinic_name]
+                )
+                if check_rs.rows:
+                    c_id, old_addr, old_phone = check_rs.rows[0]
+                    final_addr = clinic_address if clinic_address != "ثبت نشده" else (old_addr or "ثبت نشده")
+                    final_phone = clinic_phone if clinic_phone != "ثبت نشده" else (old_phone or "ثبت نشده")
+                    await client.execute(
+                        "UPDATE clinics SET address = ?, phone = ?, status = 'pending' WHERE id = ?",
+                        [final_addr, final_phone, c_id],
+                    )
+                else:
+                    await client.execute(
+                        "INSERT INTO clinics (name, address, phone, status) VALUES (?, ?, ?, 'pending')",
+                        [clinic_name, clinic_address, clinic_phone],
+                    )
+
+            result = await client.execute(
+                """
+                INSERT INTO experiences (
+                    therapist_name, clinic_name, clinic_address, clinic_phone,
+                    neighborhood, therapy_domain, approach, experience_text, status
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                """,
+                [
+                    data.get("therapist_name", "نامشخص"),
+                    clinic_name,
+                    clinic_address,
+                    clinic_phone,
+                    data.get("neighborhood", "نامشخص"),
+                    data.get("therapy_domain", "نامشخص"),
+                    data.get("approach", "نامشخص"),
+                    exp_text,
+                ],
+            )
+            exp_id = result.last_insert_rowid or 1
+
+        await update.message.reply_text(
+            "✅ سپاس از همراهی شما! تجربه ارزشمندتان به صورت ناشناس ثبت شد و پس از تایید، در سامانه نمایش داده خواهد شد.",
+            reply_markup=get_menu_keyboard(update.effective_user.id),
+        )
+
+        if ADMIN_ID:
+            new_clinic_tag = "🆕 (کلینیک/اطلاعات جدید)" if is_new_clinic else ""
+            admin_msg = f"""🆕 **تجربه جدید ثبت شد (کد #{exp_id})**
+
+👤 **درمانگر:** {data.get('therapist_name')}
+🏥 **کلینیک:** {clinic_name} {new_clinic_tag}
+🗺 **آدرس کلینیک:** {clinic_address}
+☎️ **شماره تماس:** {clinic_phone}
+📍 **محله:** {data.get('neighborhood')}
+🎯 **حوزه درمان:** {data.get('therapy_domain')}
+🧠 **رویکرد:** {data.get('approach')}
+📝 **متن تجربه:**
+{exp_text}"""
+            keyboard = InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton("✅ تایید و انتشار", callback_data=f"approve_{exp_id}"),
+                        InlineKeyboardButton("❌ رد کردن", callback_data=f"reject_{exp_id}"),
+                    ]
+                ]
+            )
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=admin_msg,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard,
+                )
+            except Exception as e:
+                logger.error(f"Error notifying admin: {e}")
+
+    except Exception as e:
+        logger.error(f"Database error in save_experience: {e}")
+        await update.message.reply_text(
+            f"⚠️ خطایی در ذخیره‌سازی رخ داد ({str(e)[:80]}). لطفاً دوباره /start را بزنید.",
+            reply_markup=get_menu_keyboard(update.effective_user.id),
+        )
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+# ---------------------------------------------------------
+# ۷. فرآیند گزینه‌ای جستجوی درمانگر
+# ---------------------------------------------------------
+async def start_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text(
+        "🔍 روش جستجوی خود را از گزینه‌های زیر انتخاب کنید:",
+        reply_markup=SEARCH_TYPE_KEYBOARD,
+    )
+    return SEARCH_TYPE
+
+async def select_search_type(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    choice = update.message.text.strip()
+    if choice == BACK_BTN:
+        return await start(update, context)
+
+    if choice == "📋 آخرین تجربه‌های ثبت‌شده":
+        return await show_search_results(update, context, column=None, query_str=None)
+
+    context.user_data["search_mode"] = choice
+
+    if choice == "👤 جستجو با نام درمانگر":
+        await update.message.reply_text(
+            "👤 نام یا نام خانوادگی درمانگر مورد نظر را بنویسید:",
+            reply_markup=ReplyKeyboardMarkup([[BACK_BTN]], resize_keyboard=True),
+        )
+    elif choice == "🏥 جستجو با کلینیک":
+        kb = await build_clinics_keyboard(include_add_new=False)
+        await update.message.reply_text(
+            "🏥 کلینیک مورد نظر را از دکمه‌های زیر انتخاب کنید:",
+            reply_markup=kb,
+        )
+    elif choice == "🎯 جستجو با حوزه درمان":
+        await update.message.reply_text(
+            "🎯 حوزه درمان مورد نظر را انتخاب کنید:",
+            reply_markup=DOMAIN_KEYBOARD,
+        )
+    elif choice == "🧠 جستجو با رویکرد":
+        await update.message.reply_text(
+            "🧠 رویکرد درمانی مورد نظر را انتخاب کنید:",
+            reply_markup=APPROACH_KEYBOARD,
+        )
+    elif choice == "📍 جستجو با محله":
+        await update.message.reply_text(
+            "📍 محله مورد نظر را انتخاب کنید:",
+            reply_markup=NEIGHBORHOOD_KEYBOARD,
+        
