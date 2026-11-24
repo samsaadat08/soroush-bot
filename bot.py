@@ -44,7 +44,7 @@ RENDER_EXTERNAL_URL = os.environ.get(
 PORT = int(os.environ.get("PORT", "8080"))
 
 # ---------------------------------------------------------
-# ۳. اتصال ناهمزمان (Async) به دیتابیس Turso (بدون قفل شدن)
+# ۳. اتصال ناهمزمان (Async) به دیتابیس Turso
 # ---------------------------------------------------------
 def get_db():
     db_url = TURSO_DATABASE_URL.replace("libsql://", "https://")
@@ -235,8 +235,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "ℹ️ **راهنمای استفاده از سروش**\n\n"
         "• **✍️ ثبت تجربه:** تجربه مثبت خود از جلسات درمان در مشهد را به صورت کاملاً ناشناس ثبت کنید. "
         "اطلاعات کلینیک، آدرس و شماره تماس پس از تایید به دکمه‌های ثابت ربات اضافه می‌شود.\n"
-        "• **🔍 جستجوی درمانگر:** بر اساس حوزه درمان (فردی، زوج، کودک...)، رویکرد درمانی (انسان‌گرا، وجودی، طرحواره، EFT...)، "
-        "کلینیک، محله یا نام درمانگر جستجو کنید و به اطلاعات تماس کلینیک دسترسی داشته باشید.\n\n"
+        "• **🔍 جستجوی درمانگر:** بر اساس حوزه درمان، رویکرد درمانی، کلینیک، محله یا نام درمانگر جستجو کنید و به اطلاعات تماس کلینیک دسترسی داشته باشید.\n\n"
         "📞 پشتیبانی: @Reza_saadatpour"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
@@ -771,3 +770,58 @@ async def run_bot_and_server() -> None:
         states={
             THERAPIST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_therapist_name)],
             CLINIC_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_clinic)],
+            NEW_CLINIC_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_new_clinic_name)],
+            NEW_CLINIC_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_new_clinic_address)],
+            NEW_CLINIC_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_new_clinic_phone)],
+            CONFIRM_EXISTING_CLINIC: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_existing_clinic)],
+            NEIGHBORHOOD: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_neighborhood)],
+            THERAPY_DOMAIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_therapy_domain)],
+            APPROACH: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_approach)],
+            EXPERIENCE_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_experience)],
+            SEARCH_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_search_type)],
+            SEARCH_QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, perform_search)],
+        },
+        fallbacks=[
+            CommandHandler("start", start),
+            MessageHandler(filters.Regex(f"^{BACK_BTN}$"), start),
+        ],
+        allow_reentry=True,
+    )
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(MessageHandler(filters.Regex("^ℹ️ راهنمای سروش$"), help_command))
+    application.add_handler(MessageHandler(filters.Regex("^📊 پنل مدیریت و گزارش‌ها$"), admin_panel))
+    application.add_handler(CallbackQueryHandler(handle_admin_callback))
+    application.add_handler(conv_handler)
+
+    webhook_path = f"/{BOT_TOKEN}"
+    webhook_url = f"{RENDER_EXTERNAL_URL.rstrip('/')}{webhook_path}"
+
+    async def telegram_webhook(request):
+        try:
+            data = await request.json()
+            update = Update.de_json(data, application.bot)
+            await application.process_update(update)
+        except Exception as e:
+            logger.error(f"Webhook update error: {e}")
+        return web.Response(text="OK", status=200)
+
+    await application.initialize()
+    await application.start()
+    await application.bot.set_webhook(url=webhook_url)
+
+    app = web.Application()
+    app.router.add_get("/", health_check)
+    app.router.add_post(webhook_path, telegram_webhook)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+
+    logger.info("Soroush Bot & Health Check Server started successfully.")
+    await asyncio.Event().wait()
+
+if __name__ == "__main__":
+    asyncio.run(run_bot_and_server())
