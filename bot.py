@@ -255,12 +255,11 @@ async def build_clinics_keyboard(include_add_new: bool = True) -> ReplyKeyboardM
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     user = update.effective_user
-    welcome_text = (
-        "سلام! به سروش خوش آمدید 🌱✨\n\n"
-        "«سروش» فضایی امن و کاملاً ناشناس برای به اشتراک گذاشتن تجربه‌های واقعی و مثبت مراجعان در مشهد است، "
-        "تا انتخاب درمانگر برای شما شفاف‌تر و آگاهانه‌تر باشد 💚\n\n"
-        "👇 از دکمه‌های زیر استفاده کنید:"
-    )
+    welcome_text = """سلام! به سروش خوش آمدید 🌱✨
+
+«سروش» فضایی امن و کاملاً ناشناس برای به اشتراک گذاشتن تجربه‌های واقعی و مثبت مراجعان در مشهد است، تا انتخاب درمانگر برای شما شفاف‌تر و آگاهانه‌تر باشد 💚
+
+👇 از دکمه‌های زیر استفاده کنید:"""
     await update.message.reply_text(
         welcome_text,
         reply_markup=get_menu_keyboard(user.id),
@@ -268,10 +267,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 async def open_guide_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    guide_intro = """🧭 **راهنمای انتخاب آگاهانه درمانگر**
+
+انتخاب یک درمانگر خوب، مهم‌ترین قدم در مسیر رشد و حال خوب است.
+برای اینکه با آگاهی کامل تصمیم بگیرید، یکی از موضوعات زیر را انتخاب کنید 👇"""
     await update.message.reply_text(
-        "🧭 **راهنمای انتخاب آگاهانه درمانگر**\n\n"
-        "انتخاب یک درمانگر خوب، مهم‌ترین قدم در مسیر رشد و حال خوب است.\n"
-        "برای اینکه با آگاهی کامل تصمیم بگیرید، یکی از موضوعات زیر را انتخاب کنید 👇",
+        guide_intro,
         parse_mode="Markdown",
         reply_markup=GUIDE_KEYBOARD,
     )
@@ -283,7 +284,187 @@ async def handle_guide_topic(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return await start(update, context)
 
     if "اخلاق" in choice:
-        text = (
-            "⚖️ **اخلاق حرفه‌ای و خطوط قرمز در اتاق درمان**\n\n"
-            "🔒 **رازدارای مطلق:**\n"
-            "تمام صحبت‌های شما در اتاق درمان کاملاً محرمانه است و بدون رضایت کتبی شما (مگر در موارد خطر جانی فوری) در اختیار هیچ‌کس حتی خانواده قرار نمی‌گیرد.\n\n
+        text = """⚖️ **اخلاق حرفه‌ای و خطوط قرمز در اتاق درمان**
+
+🔒 **رازدارای مطلق:**
+تمام صحبت‌های شما در اتاق درمان کاملاً محرمانه است و بدون رضایت کتبی شما (مگر در موارد خطر جانی فوری) در اختیار هیچ‌کس حتی خانواده قرار نمی‌گیرد.
+
+🚧 **مرزبندی شفاف حرفه‌ای:**
+درمانگر متعهد، هیچ‌گونه رابطه دوستی، عاطفی، مالی یا خانوادگی خارج از چارچوب جلسات با مراجع برقرار نمی‌کند.
+
+🤝 **احترام و عدم قضاوت:**
+اتاق درمان جای سرزنش یا تحمیل عقاید شخصی درمانگر نیست؛ درمانگر به ارزش‌ها و استقلال شما در تصمیم‌گیری احترام می‌گذارد.
+
+📋 **شفافیت در روند و هزینه:**
+مدت جلسه، هزینه و قواعد کنسلی باید از همان جلسه اول به صورت روشن به شما اعلام شود."""
+    elif "چک‌لیست" in choice:
+        text = """🎓 **چک‌لیست انتخاب یک درمانگر حرفه‌ای**
+
+🪪 **۱. پروانه اشتغال تخصصی:**
+مطمئن شوید درمانگر دارای مدرک تحصیلی مرتبط، شماره نظام روانشناسی و پروانه کار معتبر از سازمان نظام روانشناسی است.
+
+🎯 **۲. تناسب تخصص با مسئله شما:**
+هر درمانگری در حوزه‌های خاصی (فردی، زوج، کودک، خانواده و...) آموزش تخصصی دیده است؛ درمانگری را انتخاب کنید که متناسب با دغدغه فعلی شما باشد.
+
+💚 **۳. احساس امنیت و درک شدن (اتحاد درمانی):**
+پژوهش‌ها نشان می‌دهند مهم‌ترین عامل موفقیت درمان، احساس امنیت و همدلی در ۲ تا ۳ جلسه اول است. اگر احساس راحتی ندارید، تغییر درمانگر حق طبیعی شماست.
+
+⏳ **۴. پرهیز از وعده‌های معجزه‌آسا:**
+تغییر روانی یک فرآیند تدریجی و مشترک است؛ از افرادی که وعده درمان قطعی در یک جلسه را می‌دهند فاصله بگیرید."""
+    elif "رویکرد" in choice:
+        text = """🧠 **آشنایی خیلی خلاصه با رویکردهای درمانی**
+
+🌱 **انسان‌گرا و وجودی:**
+تمرکز بر رشد فردی، شناخت خود واقعی، یافتن معنا، مسئولیت‌پذیری و تجربه «اینجا و اکنون» در فضایی صمیمی و بدون قضاوت.
+
+🧩 **شناختی-رفتاری (CBT):**
+شناسایی و اصلاح خطاهای فکری و رفتارهایی که باعث اضطراب، وسواس یا افسردگی می‌شوند (ساختارمند و تمرین‌محور).
+
+🪤 **طرحواره‌درمانی:**
+ریشه‌یابی «تله‌های زندگی» و الگوهای تکراری که از دوران کودکی شکل گرفته‌اند و در روابط و انتخاب‌های امروز تکرار می‌شوند.
+
+❤️ **متمرکز بر هیجان (EFT):**
+کمک به شناخت، تجربه و تنظیم هیجان‌های عمیق و ترمیم دلبستگی (بسیار موثر در زوج‌درمانی و روابط عاطفی).
+
+🌊 **روان‌پویشی کوتاه‌مدت و تحلیلی:**
+کاوش در تعارض‌های ناخودآگاه، دفاع‌های روانی و ریشه‌های عمیق هیجانی برای رسیدن به تغییرات پایدار.
+
+🧭 **پذیرش و تعهد (ACT):**
+آموزش پذیرش افکار و هیجان‌های دشوار به جای جنگیدن با آن‌ها و حرکت به سمت ارزش‌های مهم زندگی."""
+    elif "نحوه کار" in choice:
+        text = """📖 **سروش چطور به شما کمک می‌کند؟**
+
+✍️ **ثبت تجربه ناشناس:**
+اگر تجربه مثبت و سازنده‌ای از جلسات درمان در مشهد داشته‌اید، می‌توانید بدون ثبت نام و هویت خودتان آن را ثبت کنید تا چراغ راه دیگران باشد.
+
+🔍 **جستجوی هوشمند:**
+بر اساس حوزه درمان، رویکرد، محله، کلینیک یا نام درمانگر جستجو کنید و علاوه بر خواندن تجربه واقعی مراجعان، به آدرس و شماره تماس کلینیک دسترسی داشته باشید.
+
+📞 **ارتباط با پشتیبانی:** @Reza_saadatpour"""
+    else:
+        text = "👇 لطفاً یکی از موضوعات زیر را انتخاب کنید:"
+
+    await update.message.reply_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=GUIDE_KEYBOARD,
+    )
+    return GUIDE_MENU
+
+# ---------------------------------------------------------
+# ۶. فرآیند گزینه‌ای ثبت تجربه جدید + سیستم هوشمند کلینیک، آدرس و تلفن
+# ---------------------------------------------------------
+async def start_submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    msg = """👤 نام و نام خانوادگی درمانگر را بنویسید (بدون پیشوند دکتر):
+✍️ مثال: علی رضایی"""
+    await update.message.reply_text(
+        msg,
+        reply_markup=ReplyKeyboardMarkup([[BACK_BTN]], resize_keyboard=True),
+    )
+    return THERAPIST_NAME
+
+async def get_therapist_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if text == BACK_BTN:
+        return await start(update, context)
+
+    context.user_data["therapist_name"] = text
+    kb = await build_clinics_keyboard(include_add_new=True)
+    await update.message.reply_text(
+        "🏥 کلینیک را از لیست زیر انتخاب کنید (اگر در لیست نیست، گزینه «➕ ثبت کلینیک جدید» را بزنید):",
+        reply_markup=kb,
+    )
+    return CLINIC_SELECT
+
+async def select_clinic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if text == BACK_BTN:
+        return await start(update, context)
+
+    if text == "➕ ثبت کلینیک جدید":
+        context.user_data["is_new_clinic"] = True
+        await update.message.reply_text(
+            "🏥 نام کلینیک یا مرکز مشاوره جدید را بنویسید:",
+            reply_markup=ReplyKeyboardMarkup([[BACK_BTN]], resize_keyboard=True),
+        )
+        return NEW_CLINIC_NAME
+
+    if text == "مطب شخصی / نامشخص":
+        context.user_data["clinic_name"] = "مطب شخصی / نامشخص"
+        context.user_data["clinic_address"] = "ثبت نشده"
+        context.user_data["clinic_phone"] = "ثبت نشده"
+        await update.message.reply_text(
+            "📍 محله یا محدوده کلینیک/مطب در مشهد را انتخاب کنید:",
+            reply_markup=NEIGHBORHOOD_KEYBOARD,
+        )
+        return NEIGHBORHOOD
+
+    context.user_data["clinic_name"] = text
+    existing_address = None
+    existing_phone = None
+    try:
+        async with get_db() as client:
+            rs = await client.execute("SELECT address, phone FROM clinics WHERE name = ?", [text])
+            if rs.rows:
+                existing_address = rs.rows[0][0]
+                existing_phone = rs.rows[0][1]
+    except Exception as e:
+        logger.error(f"Error fetching clinic info: {e}")
+
+    has_addr = existing_address and existing_address != "ثبت نشده"
+    has_phone = existing_phone and existing_phone != "ثبت نشده"
+
+    if has_addr or has_phone:
+        context.user_data["clinic_address"] = existing_address or "ثبت نشده"
+        context.user_data["clinic_phone"] = existing_phone or "ثبت نشده"
+        addr_display = existing_address if has_addr else "هنوز ثبت نشده"
+        phone_display = existing_phone if has_phone else "هنوز ثبت نشده"
+
+        info_msg = f"""🏥 اطلاعات ثبت‌شده برای **{text}**:
+🗺 **آدرس:** {addr_display}
+☎️ **شماره تماس:** {phone_display}
+
+آیا این اطلاعات را تایید می‌کنید یا می‌خواهید آدرس و شماره تماس را تکمیل/اصلاح کنید؟"""
+        await update.message.reply_text(
+            info_msg,
+            parse_mode="Markdown",
+            reply_markup=ReplyKeyboardMarkup(
+                [
+                    ["✅ بله، تایید اطلاعات کلینیک"],
+                    ["✏️ تکمیل / اصلاح آدرس و تلفن"],
+                    [BACK_BTN],
+                ],
+                resize_keyboard=True,
+            ),
+        )
+        return CONFIRM_EXISTING_CLINIC
+    else:
+        context.user_data["is_new_clinic"] = True
+        await update.message.reply_text(
+            f"🗺 آدرس یا محدوده دقیق **{text}** را بنویسید (تا برای مراجعان بعدی هم ذخیره شود):",
+            parse_mode="Markdown",
+            reply_markup=ReplyKeyboardMarkup(
+                [["⏭ رد کردن آدرس"], [BACK_BTN]],
+                resize_keyboard=True,
+            ),
+        )
+        return NEW_CLINIC_ADDRESS
+
+async def get_new_clinic_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if text == BACK_BTN:
+        return await start(update, context)
+
+    context.user_data["clinic_name"] = text
+    await update.message.reply_text(
+        f"🗺 آدرس کلینیک **{text}** را بنویسید (مثال: بلوار سجاد، بزرگمهر جنوبی ۲):",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup(
+            [["⏭ رد کردن آدرس"], [BACK_BTN]],
+            resize_keyboard=True,
+        ),
+    )
+    return NEW_CLINIC_ADDRESS
+
+async def get_new_clinic_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message
