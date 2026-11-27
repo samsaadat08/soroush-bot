@@ -24,7 +24,7 @@ from telegram.ext import (
 )
 
 # ---------------------------------------------------------
-# ۱. تنظیمات لاگ‌گیری آنی (بدون بافر و بدون نمایش توکن)
+# ۱. تنظیمات لاگ‌گیری آنی
 # ---------------------------------------------------------
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -49,7 +49,7 @@ RENDER_EXTERNAL_URL = os.environ.get(
 PORT = int(os.environ.get("PORT", "8080") or "8080")
 
 # ---------------------------------------------------------
-# ۳. اتصال ناهمزمان (Async) به دیتابیس Turso و همگام‌سازی جداول
+# ۳. اتصال ناهمزمان (Async) به دیتابیس Turso
 # ---------------------------------------------------------
 def get_db():
     db_url = TURSO_DATABASE_URL.replace("libsql://", "https://")
@@ -64,23 +64,6 @@ async def init_db():
         return
     try:
         async with get_db() as client:
-            try:
-                pragma_rs = await client.execute("PRAGMA table_info(experiences)")
-                if pragma_rs.rows:
-                    expected_cols = {
-                        "id", "therapist_name", "clinic_name", "clinic_address",
-                        "clinic_phone", "neighborhood", "therapy_domain",
-                        "approach", "experience_text", "status", "created_at"
-                    }
-                    has_legacy_notnull = any(
-                        (row[1] not in expected_cols and row[3] == 1)
-                        for row in pragma_rs.rows
-                    )
-                    if has_legacy_notnull:
-                        await client.execute("ALTER TABLE experiences RENAME TO experiences_legacy_backup")
-            except Exception as e:
-                logger.warning(f"Schema check notice: {e}")
-
             await client.execute("""
                 CREATE TABLE IF NOT EXISTS experiences (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -150,26 +133,26 @@ async def init_db():
         logger.exception(f"Database init error (continuing startup): {e}")
 
 # ---------------------------------------------------------
-# ۴. تعریف مراحل گفتگو، لیست‌های استاندارد و کیبوردهای گزینه‌ای
+# ۴. تعریف مراحل ساده و خطی سفر کاربر (UX)
 # ---------------------------------------------------------
 (
     THERAPIST_NAME,
     CLINIC_SELECT,
     NEW_CLINIC_NAME,
-    NEW_CLINIC_ADDRESS,
-    NEW_CLINIC_PHONE,
-    CONFIRM_EXISTING_CLINIC,
-    NEIGHBORHOOD,
     THERAPY_DOMAIN,
-    APPROACH,
     EXPERIENCE_TEXT,
     SEARCH_TYPE,
     SEARCH_QUERY,
     GUIDE_MENU,
-) = range(13)
+    QUIZ_Q1,
+    QUIZ_Q2,
+    QUIZ_Q3,
+    QUIZ_Q4,
+) = range(12)
 
-BACK_BTN = "🔙 بازگشت به منوی اصلی"
-GUIDE_BTN = "🧭 راهنمای انتخاب آگاهانه درمانگر"
+BACK_BTN = "🏠 بازگشت به منوی اصلی"
+GUIDE_BTN = "🧭 راهنمای انتخاب درمانگر"
+QUIZ_BTN = "🧩 کدام سبک مشاوره به من می‌خورد؟"
 BACKUP_BTN = "📥 دریافت فایل پشتیبان (Backup)"
 
 ALLOWED_NEIGHBORHOODS = [
@@ -189,27 +172,23 @@ ALLOWED_DOMAINS = [
     "زوج‌درمانی",
     "خانواده درمانی",
     "کودک و نوجوان",
-    "گروه درمانی",
     "مشاوره پیش از ازدواج",
-    "تحصیلی و شغلی",
-    "سایر حوزه‌ها",
+    "نمی‌دانم / سایر موارد",
 ]
 
 ALLOWED_APPROACHES = [
-    "انسان‌گرا",
-    "وجودی",
+    "انسان‌گرا و وجودی",
     "شناختی-رفتاری (CBT)",
+    "پویشی و تحلیلی",
+    "سیستمی و رابطه‌ای (EFT)",
     "طرحواره‌درمانی",
-    "متمرکز بر هیجان (EFT)",
-    "روان‌پویشی کوتاه‌مدت",
     "پذیرش و تعهد (ACT)",
-    "روانکاوی و تحلیلی",
-    "سایر رویکردها / نامشخص",
 ]
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
-        ["✍️ ثبت تجربه", "🔍 جستجوی درمانگر"],
+        ["🔍 پیدا کردن درمانگر در مشهد", "✍️ ثبت تجربه من از درمان"],
+        [QUIZ_BTN],
         [GUIDE_BTN],
     ],
     resize_keyboard=True,
@@ -217,8 +196,8 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 
 ADMIN_KEYBOARD = ReplyKeyboardMarkup(
     [
-        ["✍️ ثبت تجربه", "🔍 جستجوی درمانگر"],
-        [GUIDE_BTN],
+        ["🔍 پیدا کردن درمانگر در مشهد", "✍️ ثبت تجربه من از درمان"],
+        [QUIZ_BTN, GUIDE_BTN],
         ["📊 پنل مدیریت و گزارش‌ها", BACKUP_BTN],
     ],
     resize_keyboard=True,
@@ -250,8 +229,7 @@ DOMAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["فردی بزرگسال", "زوج‌درمانی"],
         ["خانواده درمانی", "کودک و نوجوان"],
-        ["گروه درمانی", "مشاوره پیش از ازدواج"],
-        ["تحصیلی و شغلی", "سایر حوزه‌ها"],
+        ["مشاوره پیش از ازدواج", "نمی‌دانم / سایر موارد"],
         [BACK_BTN],
     ],
     resize_keyboard=True,
@@ -259,11 +237,9 @@ DOMAIN_KEYBOARD = ReplyKeyboardMarkup(
 
 APPROACH_KEYBOARD = ReplyKeyboardMarkup(
     [
-        ["انسان‌گرا", "وجودی"],
-        ["شناختی-رفتاری (CBT)", "طرحواره‌درمانی"],
-        ["متمرکز بر هیجان (EFT)", "روان‌پویشی کوتاه‌مدت"],
-        ["پذیرش و تعهد (ACT)", "روانکاوی و تحلیلی"],
-        ["سایر رویکردها / نامشخص"],
+        ["انسان‌گرا و وجودی", "شناختی-رفتاری (CBT)"],
+        ["پویشی و تحلیلی", "سیستمی و رابطه‌ای (EFT)"],
+        ["طرحواره‌درمانی", "پذیرش و تعهد (ACT)"],
         [BACK_BTN],
     ],
     resize_keyboard=True,
@@ -272,8 +248,8 @@ APPROACH_KEYBOARD = ReplyKeyboardMarkup(
 SEARCH_TYPE_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["👤 جستجو با نام درمانگر", "🏥 جستجو با کلینیک"],
-        ["🎯 جستجو با حوزه درمان", "🧠 جستجو با رویکرد"],
-        ["📍 جستجو با محله", "📋 آخرین تجربه‌های ثبت‌شده"],
+        ["🎯 جستجو با موضوع (فردی، زوج...)", "🧠 جستجو با سبک درمان"],
+        ["📍 جستجو با محله در مشهد", "📋 آخرین تجربه‌های ثبت‌شده"],
         [BACK_BTN],
     ],
     resize_keyboard=True,
@@ -295,120 +271,248 @@ async def build_clinics_keyboard(include_add_new: bool = True) -> ReplyKeyboardM
     clinic_names = await get_approved_clinic_names()
     buttons = [clinic_names[i : i + 2] for i in range(0, len(clinic_names), 2)]
     if include_add_new:
-        buttons.append(["➕ ثبت کلینیک جدید", "مطب شخصی / نامشخص"])
+        buttons.append(["مطب شخصی / نامشخص", "➕ نام کلینیک در لیست نیست"])
     buttons.append([BACK_BTN])
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
 # ---------------------------------------------------------
-# ۵. دستورات پایه (/start) و بخش آموزشی راهنمای انتخاب آگاهانه درمانگر
+# ۵. نقطه شروع (/start) - شفاف و بدون شلوغی
 # ---------------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     user = update.effective_user
-    welcome_text = """سلام! به سروش خوش آمدید 🌱✨
+    welcome_text = """سلام، به **سروش** خوش آمدید 🌿
+مرجع اشتراک تجربه واقعی مراجعان و انتخاب آگاهانه درمانگر در مشهد (کاملاً ناشناس).
 
-«سروش» فضایی امن و کاملاً ناشناس برای به اشتراک گذاشتن تجربه‌های واقعی و مثبت مراجعان در مشهد است، تا انتخاب درمانگر برای شما شفاف‌تر و آگاهانه‌تر باشد 💚
-
-👇 از دکمه‌های زیر استفاده کنید:"""
+الان چطور می‌توانم کمکتان کنم؟ یکی از گزینه‌های پایین را لمس کنید 👇"""
     await update.message.reply_text(
         welcome_text,
+        parse_mode="Markdown",
         reply_markup=get_menu_keyboard(user.id),
     )
     return ConversationHandler.END
 
-async def open_guide_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    guide_intro = """🧭 **راهنمای انتخاب آگاهانه درمانگر**
+# ---------------------------------------------------------
+# ۶. سفر اول: آزمون کاملاً ساده و روزمره ۴ رویکرد اساسی (غیرتشخیصی)
+# ---------------------------------------------------------
+async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data["quiz_scores"] = {
+        "پویشی و تحلیلی": 0,
+        "شناختی-رفتاری (CBT)": 0,
+        "انسان‌گرا و وجودی": 0,
+        "سیستمی و رابطه‌ای (EFT)": 0,
+    }
+    intro_msg = """📍 `مسیر شما: آشنایی ساده با سبک‌های مشاوره ◀️ سوال ۱ از ۴`
 
-انتخاب یک درمانگر خوب، مهم‌ترین قدم در مسیر رشد و حال خوب است.
-برای اینکه با آگاهی کامل تصمیم بگیرید، یکی از موضوعات زیر را انتخاب کنید 👇"""
-    await update.message.reply_text(
-        guide_intro,
-        parse_mode="Markdown",
-        reply_markup=GUIDE_KEYBOARD,
+⚠️ **یک نکته مهم قبل از شروع:**
+این ۴ سوال خیلی ساده فقط برای این است که یک دید کلی و اولیه پیدا کنید. این پرسش‌ها **به هیچ عنوان جنبه تشخیصی یا پزشکی ندارند** و برای انتخاب دقیق سبک درمان، حتماً باید در جلسه اول با درمانگر مفصل صحبت کنید.
+
+━━━━━━━━━━━━━━━━━━
+**سوال ۱ از ۴:**
+وقتی یک غصه یا مشکل ذهنی اذیتتان می‌کند، دوست دارید در جلسه مشاوره بیشتر درباره چه چیزی حرف بزنید؟"""
+
+    kb = ReplyKeyboardMarkup(
+        [
+            ["۱. ریشه این حالِ بد در گذشته و اتفاقات تکراری زندگی‌ام"],
+            ["۲. راهکار عملی برای کنترل فکرهای منفی و استرس‌های روزمره"],
+            ["۳. پیدا کردن هدف، معنا و شناخت بهتر خودِ واقعی‌ام"],
+            ["۴. درست کردن رابطه‌ام با همسر، خانواده یا اطرافیانم"],
+            [BACK_BTN],
+        ],
+        resize_keyboard=True,
     )
-    return GUIDE_MENU
+    await update.message.reply_text(intro_msg, parse_mode="Markdown", reply_markup=kb)
+    return QUIZ_Q1
 
-async def handle_guide_topic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    choice = update.message.text.strip()
-    if "بازگشت به منوی اصلی" in choice:
+async def handle_quiz_q1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if "بازگشت به منوی اصلی" in text:
         return await start(update, context)
 
-    if "اخلاق" in choice:
-        text = """⚖️ **اخلاق حرفه‌ای و خطوط قرمز در اتاق درمان**
-
-🔒 **رازدارای مطلق:**
-تمام صحبت‌های شما در اتاق درمان کاملاً محرمانه است و بدون رضایت کتبی شما (مگر در موارد خطر جانی فوری) در اختیار هیچ‌کس حتی خانواده قرار نمی‌گیرد.
-
-🚧 **مرزبندی شفاف حرفه‌ای:**
-درمانگر متعهد، هیچ‌گونه رابطه دوستی، عاطفی، مالی یا خانوادگی خارج از چارچوب جلسات با مراجع برقرار نمی‌کند.
-
-🤝 **احترام و عدم قضاوت:**
-اتاق درمان جای سرزنش یا تحمیل عقاید شخصی درمانگر نیست؛ درمانگر به ارزش‌ها و استقلال شما در تصمیم‌گیری احترام می‌گذارد.
-
-📋 **شفافیت در روند و هزینه:**
-مدت جلسه، هزینه و قواعد کنسلی باید از همان جلسه اول به صورت روشن به شما اعلام شود."""
-    elif "چک‌لیست" in choice:
-        text = """🎓 **چک‌لیست انتخاب یک درمانگر حرفه‌ای**
-
-🪪 **۱. پروانه اشتغال تخصصی:**
-مطمئن شوید درمانگر دارای مدرک تحصیلی مرتبط، شماره نظام روانشناسی و پروانه کار معتبر از سازمان نظام روانشناسی است.
-
-🎯 **۲. تناسب تخصص با مسئله شما:**
-هر درمانگری در حوزه‌های خاصی (فردی، زوج، کودک، خانواده و...) آموزش تخصصی دیده است؛ درمانگری را انتخاب کنید که متناسب با دغدغه فعلی شما باشد.
-
-💚 **۳. احساس امنیت و درک شدن (اتحاد درمانی):**
-پژوهش‌ها نشان می‌دهند مهم‌ترین عامل موفقیت درمان، احساس امنیت و همدلی در ۲ تا ۳ جلسه اول است. اگر احساس راحتی ندارید، تغییر درمانگر حق طبیعی شماست.
-
-⏳ **۴. پرهیز از وعده‌های معجزه‌آسا:**
-تغییر روانی یک فرآیند تدریجی و مشترک است؛ از افرادی که وعده درمان قطعی در یک جلسه را می‌دهند فاصله بگیرید."""
-    elif "رویکرد" in choice:
-        text = """🧠 **آشنایی خیلی خلاصه با رویکردهای درمانی**
-
-🌱 **انسان‌گرا و وجودی:**
-تمرکز بر رشد فردی، شناخت خود واقعی، یافتن معنا، مسئولیت‌پذیری و تجربه «اینجا و اکنون» در فضایی صمیمی و بدون قضاوت.
-
-🧩 **شناختی-رفتاری (CBT):**
-شناسایی و اصلاح خطاهای فکری و رفتارهایی که باعث اضطراب، وسواس یا افسردگی می‌شوند (ساختارمند و تمرین‌محور).
-
-🪤 **طرحواره‌درمانی:**
-ریشه‌یابی «تله‌های زندگی» و الگوهای تکراری که از دوران کودکی شکل گرفته‌اند و در روابط و انتخاب‌های امروز تکرار می‌شوند.
-
-❤️ **متمرکز بر هیجان (EFT):**
-کمک به شناخت، تجربه و تنظیم هیجان‌های عمیق و ترمیم دلبستگی (بسیار موثر در زوج‌درمانی و روابط عاطفی).
-
-🌊 **روان‌پویشی کوتاه‌مدت و تحلیلی:**
-کاوش در تعارض‌های ناخودآگاه، دفاع‌های روانی و ریشه‌های عمیق هیجانی برای رسیدن به تغییرات پایدار.
-
-🧭 **پذیرش و تعهد (ACT):**
-آموزش پذیرش افکار و هیجان‌های دشوار به جای جنگیدن با آن‌ها و حرکت به سمت ارزش‌های مهم زندگی."""
-    elif "نحوه کار" in choice:
-        text = """📖 **سروش چطور به شما کمک می‌کند؟**
-
-✍️ **ثبت تجربه ناشناس:**
-اگر تجربه مثبت و سازنده‌ای از جلسات درمان در مشهد داشته‌اید، می‌توانید بدون ثبت نام و هویت خودتان آن را ثبت کنید تا چراغ راه دیگران باشد.
-
-🔍 **جستجوی هوشمند:**
-بر اساس حوزه درمان، رویکرد، محله، کلینیک یا نام درمانگر جستجو کنید و علاوه بر خواندن تجربه واقعی مراجعان، به آدرس و شماره تماس کلینیک دسترسی داشته باشید.
-
-📞 **ارتباط با پشتیبانی:** @Reza_saadatpour"""
+    scores = context.user_data.get("quiz_scores", {})
+    if text.startswith("۱"):
+        scores["پویشی و تحلیلی"] += 1
+    elif text.startswith("۲"):
+        scores["شناختی-رفتاری (CBT)"] += 1
+    elif text.startswith("۳"):
+        scores["انسان‌گرا و وجودی"] += 1
+    elif text.startswith("۴"):
+        scores["سیستمی و رابطه‌ای (EFT)"] += 1
     else:
-        text = "👇 لطفاً یکی از موضوعات زیر را انتخاب کنید:"
+        await update.message.reply_text("👇 لطفاً یکی از ۴ گزینه پایین را لمس کنید:")
+        return QUIZ_Q1
+
+    q2_msg = """📍 `مسیر شما: آشنایی ساده با سبک‌های مشاوره ◀️ سوال ۲ از ۴`
+
+**سوال ۲ از ۴:**
+پیش کدام مدل مشاور احساس راحتی بیشتری می‌کنید؟"""
+
+    kb = ReplyKeyboardMarkup(
+        [
+            ["۱. کسی که با حوصله گوش دهد و کمکم کند احساسات قدیمی‌ام را بفهمم"],
+            ["۲. کسی که مثل یک مربی دلسوز، تمرین و راهکار مشخص بدهد"],
+            ["۳. کسی که قضاوتم نکند و کمکم کند راه خودم را پیدا کنم"],
+            ["۴. کسی که بلد باشد گره‌های عاطفی بین من و اطرافیانم را باز کند"],
+            [BACK_BTN],
+        ],
+        resize_keyboard=True,
+    )
+    await update.message.reply_text(q2_msg, parse_mode="Markdown", reply_markup=kb)
+    return QUIZ_Q2
+
+async def handle_quiz_q2(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if "بازگشت به منوی اصلی" in text:
+        return await start(update, context)
+
+    scores = context.user_data.get("quiz_scores", {})
+    if text.startswith("۱"):
+        scores["پویشی و تحلیلی"] += 1
+    elif text.startswith("۲"):
+        scores["شناختی-رفتاری (CBT)"] += 1
+    elif text.startswith("۳"):
+        scores["انسان‌گرا و وجودی"] += 1
+    elif text.startswith("۴"):
+        scores["سیستمی و رابطه‌ای (EFT)"] += 1
+    else:
+        await update.message.reply_text("👇 لطفاً یکی از ۴ گزینه پایین را لمس کنید:")
+        return QUIZ_Q2
+
+    q3_msg = """📍 `مسیر شما: آشنایی ساده با سبک‌های مشاوره ◀️ سوال ۳ از ۴`
+
+**سوال ۳ از ۴:**
+اگر این جلسات مشاوره خوب پیش برود، دوست دارید آخرش به چه چیزی برسید؟"""
+
+    kb = ReplyKeyboardMarkup(
+        [
+            ["۱. بفهمم چرا این‌طوری رفتار می‌کنم و زخم‌های قدیمی‌ام خوب شود"],
+            ["۲. افکار آزاردهنده، ترس‌ها یا بی‌حوصلگی الانم کم شود و آرامش بگیرم"],
+            ["۳. برای زندگی‌ام هدف و معنا داشته باشم و راحت‌تر تصمیم بگیرم"],
+            ["۴. در رابطه‌ام احساس امنیت، درک شدن و صمیمیت بیشتری داشته باشم"],
+            [BACK_BTN],
+        ],
+        resize_keyboard=True,
+    )
+    await update.message.reply_text(q3_msg, parse_mode="Markdown", reply_markup=kb)
+    return QUIZ_Q3
+
+async def handle_quiz_q3(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if "بازگشت به منوی اصلی" in text:
+        return await start(update, context)
+
+    scores = context.user_data.get("quiz_scores", {})
+    if text.startswith("۱"):
+        scores["پویشی و تحلیلی"] += 1
+    elif text.startswith("۲"):
+        scores["شناختی-رفتاری (CBT)"] += 1
+    elif text.startswith("۳"):
+        scores["انسان‌گرا و وجودی"] += 1
+    elif text.startswith("۴"):
+        scores["سیستمی و رابطه‌ای (EFT)"] += 1
+    else:
+        await update.message.reply_text("👇 لطفاً یکی از ۴ گزینه پایین را لمس کنید:")
+        return QUIZ_Q3
+
+    q4_msg = """📍 `مسیر شما: آشنایی ساده با سبک‌های مشاوره ◀️ سوال ۴ از ۴ (آخرین سوال)`
+
+**سوال ۴ از ۴:**
+الان کدام جمله بیشتر شبیه حرف دل شماست؟"""
+
+    kb = ReplyKeyboardMarkup(
+        [
+            ["۱. حس می‌کنم یک چیزهایی از گذشته هنوز روی رفتار امروزم سایه انداخته"],
+            ["۲. مغزم از فکر و خیال خسته شده؛ یک راه علمی و عملی می‌خواهم"],
+            ["۳. حس می‌کنم وسط زندگی گم شده‌ام و دنبال آرامش درونی و خودشناسی‌ام"],
+            ["۴. بیشترین چیزی که حالم را بد کرده، فاصله یا مشکل با همسر/خانواده است"],
+            [BACK_BTN],
+        ],
+        resize_keyboard=True,
+    )
+    await update.message.reply_text(q4_msg, parse_mode="Markdown", reply_markup=kb)
+    return QUIZ_Q4
+
+async def handle_quiz_q4(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    if "بازگشت به منوی اصلی" in text:
+        return await start(update, context)
+
+    scores = context.user_data.get("quiz_scores", {
+        "پویشی و تحلیلی": 0,
+        "شناختی-رفتاری (CBT)": 0,
+        "انسان‌گرا و وجودی": 0,
+        "سیستمی و رابطه‌ای (EFT)": 0,
+    })
+    if text.startswith("۱"):
+        scores["پویشی و تحلیلی"] += 1
+    elif text.startswith("۲"):
+        scores["شناختی-رفتاری (CBT)"] += 1
+    elif text.startswith("۳"):
+        scores["انسان‌گرا و وجودی"] += 1
+    elif text.startswith("۴"):
+        scores["سیستمی و رابطه‌ای (EFT)"] += 1
+    else:
+        await update.message.reply_text("👇 لطفاً یکی از ۴ گزینه پایین را لمس کنید:")
+        return QUIZ_Q4
+
+    best_approach = max(scores, key=scores.get)
+
+    descriptions = {
+        "پویشی و تحلیلی": "در این سبک، مشاور کمک می‌کند ریشه احساسات و رفتارهای تکراری امروزتان را در تجربیات گذشته و لایه‌های عمیق‌تر ذهن پیدا کنید تا تغییرات ماندگاری شکل بگیرد.",
+        "شناختی-رفتاری (CBT)": "در این سبک، مشاور مثل یک همراه علمی کمک می‌کند فکرهای منفی و عادت‌هایی که استرس یا غم را نگه می‌دارند بشناسید و با راهکارهای عملی آن‌ها را تغییر دهید.",
+        "انسان‌گرا و وجودی": "در این سبک، مشاور بدون قضاوت و برچسب زدن کنارتان می‌نشیند تا خودتان را بهتر بشناسید، معنای تازه‌ای برای زندگی پیدا کنید و با خیال راحت‌تر تصمیم بگیرید.",
+        "سیستمی و رابطه‌ای (EFT)": "در این سبک، تمرکز اصلی روی رابطه‌ها، احساسات عمیق بین شما و عزیزانتان و باز کردن گره‌های عاطفی برای ساختن یک رابطه امن و صمیمی است.",
+    }
+
+    result_msg = f"""📍 `مسیر شما: آشنایی ساده با سبک‌های مشاوره ◀️ نتیجه اولیه`
+
+✨ **به نظر می‌رسد سبک «{best_approach}» به حال‌وهوای فعلی شما نزدیک‌تر است.**
+
+{descriptions[best_approach]}
+
+━━━━━━━━━━━━━━━━━━
+⚠️ **دوباره یادآوری می‌کنیم:**
+این نتیجه فقط یک **راهنمای خیلی ساده و محدود** برای آشنایی اولیه است و **به هیچ عنوان جنبه تشخیصی ندارد**. برای اینکه دقیق بفهمید چه نوع درمانی برایتان مناسب است، موضوع حتماً باید به صورت عمیق‌تر در جلسه اول توسط درمانگر بررسی شود."""
+
+    inline_kb = InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(f"🔍 دیدن درمانگران سبک {best_approach} در مشهد", callback_data=f"quizfilter_{best_approach}")],
+            [InlineKeyboardButton("📋 دیدن همه درمانگران مشهد", callback_data="quizfilter_all")],
+        ]
+    )
 
     await update.message.reply_text(
-        text,
+        result_msg,
         parse_mode="Markdown",
-        reply_markup=GUIDE_KEYBOARD,
+        reply_markup=get_menu_keyboard(update.effective_user.id),
     )
-    return GUIDE_MENU
+    await update.message.reply_text(
+        "👇 اگر مایل هستید، می‌توانید درمانگران مرتبط را ببینید:",
+        reply_markup=inline_kb,
+    )
+    return ConversationHandler.END
+
+async def handle_quiz_filter_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    data = query.data.replace("quizfilter_", "")
+    if data == "all":
+        await send_search_results_to_chat(query.message, column=None, query_str=None)
+    else:
+        short_key = data.split(" ")[0]
+        await send_search_results_to_chat(query.message, column="approach", query_str=short_key)
 
 # ---------------------------------------------------------
-# ۶. فرآیند گزینه‌ای ثبت تجربه جدید + سیستم هوشمند کلینیک، آدرس و تلفن
+# ۷. سفر دوم: ثبت تجربه ساده و سریع (فقط ۳ قدم شفاف بدون درگیر کردن کاربر با آدرس و تلفن)
 # ---------------------------------------------------------
 async def start_submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    msg = """👤 نام و نام خانوادگی درمانگر را بنویسید (بدون پیشوند دکتر):
-✍️ مثال: علی رضایی"""
+    msg = """📍 `مسیر شما: ثبت تجربه ◀️ قدم ۱ از ۳`
+
+👤 **نام و نام خانوادگی درمانگر** خود را بنویسید (بدون پیشوند دکتر):
+✍️ مثال: رضا سعادت‌پور"""
     await update.message.reply_text(
         msg,
+        parse_mode="Markdown",
         reply_markup=ReplyKeyboardMarkup([[BACK_BTN]], resize_keyboard=True),
     )
     return THERAPIST_NAME
@@ -419,13 +523,14 @@ async def get_therapist_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return await start(update, context)
 
     if len(text) < 3:
-        await update.message.reply_text("⚠️ لطفاً نام و نام خانوادگی درمانگر را کامل‌تر وارد کنید:")
+        await update.message.reply_text("⚠️ لطفاً نام و نام خانوادگی درمانگر را کامل‌تر بنویسید:")
         return THERAPIST_NAME
 
     context.user_data["therapist_name"] = text
     kb = await build_clinics_keyboard(include_add_new=True)
     await update.message.reply_text(
-        "🏥 کلینیک را از لیست زیر انتخاب کنید (اگر در لیست نیست، گزینه «➕ ثبت کلینیک جدید» را بزنید):",
+        f"📍 `مسیر شما: ثبت تجربه ◀️ قدم ۲ از ۳`\n\n🏥 **دکتر/آقای {text}** در کدام کلینیک یا مرکز بودند؟ از دکمه‌های زیر انتخاب کنید:",
+        parse_mode="Markdown",
         reply_markup=kb,
     )
     return CLINIC_SELECT
@@ -435,85 +540,47 @@ async def select_clinic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if "بازگشت به منوی اصلی" in text:
         return await start(update, context)
 
-    if text == "➕ ثبت کلینیک جدید":
+    if text == "➕ نام کلینیک در لیست نیست":
         context.user_data["is_new_clinic"] = True
         await update.message.reply_text(
-            "🏥 نام کلینیک یا مرکز مشاوره جدید را بنویسید:",
+            "🏥 فقط **نام کلینیک** را بنویسید (نیازی به نوشتن آدرس یا شماره تلفن نیست):",
+            parse_mode="Markdown",
             reply_markup=ReplyKeyboardMarkup([[BACK_BTN]], resize_keyboard=True),
         )
         return NEW_CLINIC_NAME
 
     if text == "مطب شخصی / نامشخص":
         context.user_data["clinic_name"] = "مطب شخصی / نامشخص"
+        context.user_data["clinic_address"] = "ثبت نشده"
+        context.user_data["clinic_phone"] = "ثبت نشده"
         context.user_data["is_new_clinic"] = False
-        await update.message.reply_text(
-            "🗺 آدرس مطب شخصی را بنویسید (مثال: خیابان فلسطین، فلسطین ۶) یا دکمه رد کردن را بزنید:",
-            reply_markup=ReplyKeyboardMarkup(
-                [["⏭ رد کردن آدرس"], [BACK_BTN]],
-                resize_keyboard=True,
-            ),
-        )
-        return NEW_CLINIC_ADDRESS
-
-    approved_clinics = await get_approved_clinic_names()
-    if text not in approved_clinics:
-        kb = await build_clinics_keyboard(include_add_new=True)
-        await update.message.reply_text(
-            "⚠️ لطفاً نام کلینیک را از دکمه‌های زیر انتخاب کنید یا گزینه «➕ ثبت کلینیک جدید» را بزنید:",
-            reply_markup=kb,
-        )
-        return CLINIC_SELECT
-
-    context.user_data["clinic_name"] = text
-    existing_address = None
-    existing_phone = None
-    try:
-        async with get_db() as client:
-            rs = await client.execute("SELECT address, phone FROM clinics WHERE name = ?", [text])
-            if rs.rows:
-                existing_address = rs.rows[0][0]
-                existing_phone = rs.rows[0][1]
-    except Exception as e:
-        logger.error(f"Error fetching clinic info: {e}")
-
-    has_addr = existing_address and existing_address != "ثبت نشده"
-    has_phone = existing_phone and existing_phone != "ثبت نشده"
-
-    if has_addr or has_phone:
-        context.user_data["clinic_address"] = existing_address or "ثبت نشده"
-        context.user_data["clinic_phone"] = existing_phone or "ثبت نشده"
-        addr_display = existing_address if has_addr else "هنوز ثبت نشده"
-        phone_display = existing_phone if has_phone else "هنوز ثبت نشده"
-
-        info_msg = f"""🏥 اطلاعات ثبت‌شده برای **{text}**:
-🗺 **آدرس:** {addr_display}
-☎️ **شماره تماس:** {phone_display}
-
-آیا این اطلاعات را تایید می‌کنید یا می‌خواهید آدرس و شماره تماس را تکمیل/اصلاح کنید؟"""
-        await update.message.reply_text(
-            info_msg,
-            parse_mode="Markdown",
-            reply_markup=ReplyKeyboardMarkup(
-                [
-                    ["✅ بله، تایید اطلاعات کلینیک"],
-                    ["✏️ تکمیل / اصلاح آدرس و تلفن"],
-                    [BACK_BTN],
-                ],
-                resize_keyboard=True,
-            ),
-        )
-        return CONFIRM_EXISTING_CLINIC
     else:
-        context.user_data["is_new_clinic"] = True
-        await update.message.reply_text(
-            f"🗺 آدرس یا محدوده دقیق **{text}** را بنویسید (تا برای مراجعان بعدی هم ذخیره شود):",
-            parse_mode="Markdown",
-            reply_markup=ReplyKeyboardMarkup(
-                [["⏭ رد کردن آدرس"], [BACK_BTN]],
-                resize_keyboard=True,
-            ),
-        )
-        return NEW_CLINIC_ADDRESS
+        approved_clinics = await get_approved_clinic_names()
+        if text not in approved_clinics:
+            kb = await build_clinics_keyboard(include_add_new=True)
+            await update.message.reply_text(
+                "⚠️ لطفاً یکی از کلینیک‌های زیر را انتخاب کنید یا گزینه «➕ نام کلینیک در لیست نیست» را بزنید:",
+                reply_markup=kb,
+            )
+            return CLINIC_SELECT
+
+        context.user_data["clinic_name"] = text
+        context.user_data["is_new_clinic"] = False
+        try:
+            async with get_db() as client:
+                rs = await client.execute("SELECT address, phone FROM clinics WHERE name = ?", [text])
+                if rs.rows:
+                    context.user_data["clinic_address"] = rs.rows[0][0] or "ثبت نشده"
+                    context.user_data["clinic_phone"] = rs.rows[0][1] or "ثبت نشده"
+        except Exception:
+            pass
+
+    await update.message.reply_text(
+        "📍 `مسیر شما: ثبت تجربه ◀️ قدم ۲ از ۳ (انتخاب موضوع)`\n\n🎯 جلسات شما بیشتر در چه زمینه‌ای بود؟",
+        parse_mode="Markdown",
+        reply_markup=DOMAIN_KEYBOARD,
+    )
+    return THERAPY_DOMAIN
 
 async def get_new_clinic_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text.strip()
@@ -521,82 +588,11 @@ async def get_new_clinic_name(update: Update, context: ContextTypes.DEFAULT_TYPE
         return await start(update, context)
 
     context.user_data["clinic_name"] = text
-    await update.message.reply_text(
-        f"🗺 آدرس کلینیک **{text}** را بنویسید (مثال: بلوار سجاد، بزرگمهر جنوبی ۲):",
-        parse_mode="Markdown",
-        reply_markup=ReplyKeyboardMarkup(
-            [["⏭ رد کردن آدرس"], [BACK_BTN]],
-            resize_keyboard=True,
-        ),
-    )
-    return NEW_CLINIC_ADDRESS
-
-async def get_new_clinic_address(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = update.message.text.strip()
-    if "بازگشت به منوی اصلی" in text:
-        return await start(update, context)
-
-    context.user_data["clinic_address"] = "ثبت نشده" if text == "⏭ رد کردن آدرس" else text
-    clinic_name = context.user_data.get("clinic_name", "کلینیک / مطب")
-    await update.message.reply_text(
-        f"☎️ شماره تلفن پذیرش یا نوبت‌دهی **{clinic_name}** را بنویسید (مثال: 05137654321):",
-        parse_mode="Markdown",
-        reply_markup=ReplyKeyboardMarkup(
-            [["⏭ رد کردن شماره تلفن"], [BACK_BTN]],
-            resize_keyboard=True,
-        ),
-    )
-    return NEW_CLINIC_PHONE
-
-async def get_new_clinic_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = update.message.text.strip()
-    if "بازگشت به منوی اصلی" in text:
-        return await start(update, context)
-
-    context.user_data["clinic_phone"] = "ثبت نشده" if text == "⏭ رد کردن شماره تلفن" else text
-    await update.message.reply_text(
-        "📍 محله یا محدوده کلینیک/مطب در مشهد را از دکمه‌های زیر انتخاب کنید:",
-        reply_markup=NEIGHBORHOOD_KEYBOARD,
-    )
-    return NEIGHBORHOOD
-
-async def confirm_existing_clinic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = update.message.text.strip()
-    if "بازگشت به منوی اصلی" in text:
-        return await start(update, context)
-
-    if text == "✏️ تکمیل / اصلاح آدرس و تلفن":
-        context.user_data["is_new_clinic"] = True
-        await update.message.reply_text(
-            "🗺 آدرس جدید یا تکمیلی کلینیک را بنویسید:",
-            reply_markup=ReplyKeyboardMarkup(
-                [["⏭ رد کردن آدرس"], [BACK_BTN]],
-                resize_keyboard=True,
-            ),
-        )
-        return NEW_CLINIC_ADDRESS
+    context.user_data["clinic_address"] = "ثبت نشده"
+    context.user_data["clinic_phone"] = "ثبت نشده"
 
     await update.message.reply_text(
-        "📍 محله یا محدوده کلینیک در مشهد را از دکمه‌های زیر انتخاب کنید:",
-        reply_markup=NEIGHBORHOOD_KEYBOARD,
-    )
-    return NEIGHBORHOOD
-
-async def get_neighborhood(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = update.message.text.strip()
-    if "بازگشت به منوی اصلی" in text:
-        return await start(update, context)
-
-    if text not in ALLOWED_NEIGHBORHOODS:
-        await update.message.reply_text(
-            "⚠️ لطفاً محله را فقط از روی دکمه‌های زیر انتخاب کنید (اگر در لیست نیست، گزینه «سایر مناطق مشهد» را بزنید):",
-            reply_markup=NEIGHBORHOOD_KEYBOARD,
-        )
-        return NEIGHBORHOOD
-
-    context.user_data["neighborhood"] = text
-    await update.message.reply_text(
-        "🎯 **حوزه درمان** شما در جلسات چه بوده است؟ از گزینه‌های زیر انتخاب کنید:",
+        "📍 `مسیر شما: ثبت تجربه ◀️ قدم ۲ از ۳ (انتخاب موضوع)`\n\n🎯 جلسات شما بیشتر در چه زمینه‌ای بود؟",
         parse_mode="Markdown",
         reply_markup=DOMAIN_KEYBOARD,
     )
@@ -609,34 +605,17 @@ async def get_therapy_domain(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if text not in ALLOWED_DOMAINS:
         await update.message.reply_text(
-            "⚠️ لطفاً حوزه درمان را از دکمه‌های زیر انتخاب کنید:",
+            "⚠️ لطفاً موضوع جلسات را از دکمه‌های زیر انتخاب کنید:",
             reply_markup=DOMAIN_KEYBOARD,
         )
         return THERAPY_DOMAIN
 
     context.user_data["therapy_domain"] = text
+    t_name = context.user_data.get("therapist_name", "درمانگر")
+
     await update.message.reply_text(
-        "🧠 **رویکرد درمانی** درمانگر چه بوده است؟ از گزینه‌های زیر انتخاب کنید:",
+        f"📍 `مسیر شما: ثبت تجربه ◀️ قدم ۳ از ۳ (پایان)`\n\n📝 تجربه واقعی و سازنده خودتان را از جلسات با **{t_name}** بنویسید (مثلاً: فضای امن، میزان همدلی، نتیجه‌ای که گرفتید و...):\n\n🔒 *هویت شما کاملاً ناشناس می‌ماند.*",
         parse_mode="Markdown",
-        reply_markup=APPROACH_KEYBOARD,
-    )
-    return APPROACH
-
-async def get_approach(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = update.message.text.strip()
-    if "بازگشت به منوی اصلی" in text:
-        return await start(update, context)
-
-    if text not in ALLOWED_APPROACHES:
-        await update.message.reply_text(
-            "⚠️ لطفاً رویکرد درمانی را از دکمه‌های زیر انتخاب کنید (یا «سایر رویکردها / نامشخص» را بزنید):",
-            reply_markup=APPROACH_KEYBOARD,
-        )
-        return APPROACH
-
-    context.user_data["approach"] = text
-    await update.message.reply_text(
-        "📝 تجربه مثبت و سازنده خود را از روند درمان با این درمانگر بنویسید (هویت شما کاملاً ناشناس می‌ماند):",
         reply_markup=ReplyKeyboardMarkup([[BACK_BTN]], resize_keyboard=True),
     )
     return EXPERIENCE_TEXT
@@ -655,21 +634,11 @@ async def save_experience(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     try:
         async with get_db() as client:
             if is_new_clinic and clinic_name not in ["مطب شخصی / نامشخص", "نامشخص"]:
-                check_rs = await client.execute(
-                    "SELECT id, address, phone FROM clinics WHERE name = ?", [clinic_name]
-                )
-                if check_rs.rows:
-                    c_id, old_addr, old_phone = check_rs.rows[0]
-                    final_addr = clinic_address if clinic_address != "ثبت نشده" else (old_addr or "ثبت نشده")
-                    final_phone = clinic_phone if clinic_phone != "ثبت نشده" else (old_phone or "ثبت نشده")
+                check_rs = await client.execute("SELECT id FROM clinics WHERE name = ?", [clinic_name])
+                if not check_rs.rows:
                     await client.execute(
-                        "UPDATE clinics SET address = ?, phone = ?, status = 'pending' WHERE id = ?",
-                        [final_addr, final_phone, c_id],
-                    )
-                else:
-                    await client.execute(
-                        "INSERT INTO clinics (name, address, phone, status) VALUES (?, ?, ?, 'pending')",
-                        [clinic_name, clinic_address, clinic_phone],
+                        "INSERT INTO clinics (name, address, phone, status) VALUES (?, 'ثبت نشده', 'ثبت نشده', 'pending')",
+                        [clinic_name],
                     )
 
             result = await client.execute(
@@ -678,37 +647,32 @@ async def save_experience(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     therapist_name, clinic_name, clinic_address, clinic_phone,
                     neighborhood, therapy_domain, approach, experience_text, status
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                VALUES (?, ?, ?, ?, 'مشهد', ?, 'ثبت توسط مراجع', ?, 'pending')
                 """,
                 [
                     data.get("therapist_name", "نامشخص"),
                     clinic_name,
                     clinic_address,
                     clinic_phone,
-                    data.get("neighborhood", "نامشخص"),
                     data.get("therapy_domain", "نامشخص"),
-                    data.get("approach", "نامشخص"),
                     exp_text,
                 ],
             )
             exp_id = result.last_insert_rowid or 1
 
         await update.message.reply_text(
-            "✅ سپاس از همراهی شما! تجربه ارزشمندتان به صورت ناشناس ثبت شد و پس از تایید، در سامانه نمایش داده خواهد شد.",
+            "✅ **سپاس از همراهی شما!**\nتجربه ارزشمندتان با موفقیت و به صورت کاملاً ناشناس ثبت شد و پس از تایید، در سامانه نمایش داده می‌شود 🌿",
+            parse_mode="Markdown",
             reply_markup=get_menu_keyboard(update.effective_user.id),
         )
 
         if ADMIN_ID:
-            new_clinic_tag = "🆕 (کلینیک/اطلاعات جدید)" if is_new_clinic else ""
+            new_clinic_tag = "🆕 (کلینیک جدید)" if is_new_clinic else ""
             admin_msg = f"""🆕 **تجربه جدید ثبت شد (کد #{exp_id})**
 
 👤 **درمانگر:** {data.get('therapist_name')}
 🏥 **کلینیک:** {clinic_name} {new_clinic_tag}
-🗺 **آدرس کلینیک:** {clinic_address}
-☎️ **شماره تماس:** {clinic_phone}
-📍 **محله:** {data.get('neighborhood')}
 🎯 **حوزه درمان:** {data.get('therapy_domain')}
-🧠 **رویکرد:** {data.get('approach')}
 📝 **متن تجربه:**
 {exp_text}"""
             keyboard = InlineKeyboardMarkup(
@@ -732,7 +696,7 @@ async def save_experience(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except Exception as e:
         logger.error(f"Database error in save_experience: {e}")
         await update.message.reply_text(
-            f"⚠️ خطایی در ذخیره‌سازی رخ داد ({str(e)[:80]}). لطفاً دوباره /start را بزنید.",
+            "⚠️ خطایی در ذخیره‌سازی رخ داد. لطفاً دوباره /start را بزنید.",
             reply_markup=get_menu_keyboard(update.effective_user.id),
         )
 
@@ -740,11 +704,12 @@ async def save_experience(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return ConversationHandler.END
 
 # ---------------------------------------------------------
-# ۷. فرآیند گزینه‌ای جستجوی درمانگر (با تکمیل خودکار اطلاعات کلینیک و جلوگیری از پیام طولانی)
+# ۸. سفر سوم: جستجوی سریع و شفاف درمانگر (۲ قدم تا نتیجه)
 # ---------------------------------------------------------
 async def start_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
-        "🔍 روش جستجوی خود را از گزینه‌های زیر انتخاب کنید:",
+        "📍 `مسیر شما: پیدا کردن درمانگر ◀️ قدم ۱ از ۲`\n\n🔍 بر اساس کدام معیار می‌خواهید جستجو کنید؟",
+        parse_mode="Markdown",
         reply_markup=SEARCH_TYPE_KEYBOARD,
     )
     return SEARCH_TYPE
@@ -761,28 +726,33 @@ async def select_search_type(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if choice == "👤 جستجو با نام درمانگر":
         await update.message.reply_text(
-            "👤 نام یا نام خانوادگی درمانگر مورد نظر را بنویسید:",
+            "📍 `مسیر شما: پیدا کردن درمانگر ◀️ قدم ۲ از ۲`\n\n👤 نام یا نام خانوادگی درمانگر مورد نظر را بنویسید:",
+            parse_mode="Markdown",
             reply_markup=ReplyKeyboardMarkup([[BACK_BTN]], resize_keyboard=True),
         )
     elif choice == "🏥 جستجو با کلینیک":
         kb = await build_clinics_keyboard(include_add_new=False)
         await update.message.reply_text(
-            "🏥 کلینیک مورد نظر را از دکمه‌های زیر انتخاب کنید:",
+            "📍 `مسیر شما: پیدا کردن درمانگر ◀️ قدم ۲ از ۲`\n\n🏥 کلینیک مورد نظر را انتخاب کنید:",
+            parse_mode="Markdown",
             reply_markup=kb,
         )
-    elif choice == "🎯 جستجو با حوزه درمان":
+    elif choice == "🎯 جستجو با موضوع (فردی، زوج...)":
         await update.message.reply_text(
-            "🎯 حوزه درمان مورد نظر را انتخاب کنید:",
+            "📍 `مسیر شما: پیدا کردن درمانگر ◀️ قدم ۲ از ۲`\n\n🎯 موضوع مورد نظر را انتخاب کنید:",
+            parse_mode="Markdown",
             reply_markup=DOMAIN_KEYBOARD,
         )
-    elif choice == "🧠 جستجو با رویکرد":
+    elif choice == "🧠 جستجو با سبک درمان":
         await update.message.reply_text(
-            "🧠 رویکرد درمانی مورد نظر را انتخاب کنید:",
+            "📍 `مسیر شما: پیدا کردن درمانگر ◀️ قدم ۲ از ۲`\n\n🧠 سبک درمانی مورد نظر را انتخاب کنید:",
+            parse_mode="Markdown",
             reply_markup=APPROACH_KEYBOARD,
         )
-    elif choice == "📍 جستجو با محله":
+    elif choice == "📍 جستجو با محله در مشهد":
         await update.message.reply_text(
-            "📍 محله مورد نظر را انتخاب کنید:",
+            "📍 `مسیر شما: پیدا کردن درمانگر ◀️ قدم ۲ از ۲`\n\n📍 محله مورد نظر را انتخاب کنید:",
+            parse_mode="Markdown",
             reply_markup=NEIGHBORHOOD_KEYBOARD,
         )
     else:
@@ -799,310 +769,18 @@ async def perform_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     col_map = {
         "👤 جستجو با نام درمانگر": "therapist_name",
         "🏥 جستجو با کلینیک": "clinic_name",
-        "🎯 جستجو با حوزه درمان": "therapy_domain",
-        "🧠 جستجو با رویکرد": "approach",
-        "📍 جستجو با محله": "neighborhood",
+        "🎯 جستجو با موضوع (فردی، زوج...)": "therapy_domain",
+        "🧠 جستجو با سبک درمان": "approach",
+        "📍 جستجو با محله در مشهد": "neighborhood",
     }
     column = col_map.get(mode, "all")
     return await show_search_results(update, context, column=column, query_str=text)
 
-async def show_search_results(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, column: str | None, query_str: str | None
-) -> int:
+async def send_search_results_to_chat(message_obj, column: str | None, query_str: str | None):
     try:
         async with get_db() as client:
             base_sql = """
                 SELECT e.therapist_name, e.clinic_name,
                        COALESCE(NULLIF(e.clinic_address, 'ثبت نشده'), c.address, 'ثبت نشده'),
                        COALESCE(NULLIF(e.clinic_phone, 'ثبت نشده'), c.phone, 'ثبت نشده'),
-                       e.neighborhood, e.therapy_domain, e.approach, e.experience_text
-                FROM experiences e
-                LEFT JOIN clinics c ON e.clinic_name = c.name
-                WHERE e.status = 'approved'
-            """
-            if not query_str:
-                rs = await client.execute(f"{base_sql} ORDER BY e.id DESC LIMIT 6")
-            elif column and column != "all":
-                q = f"%{query_str}%"
-                rs = await client.execute(
-                    f"{base_sql} AND e.{column} LIKE ? ORDER BY e.id DESC LIMIT 6",
-                    [q],
-                )
-            else:
-                q = f"%{query_str}%"
-                rs = await client.execute(
-                    f"""{base_sql} AND (
-                        e.therapist_name LIKE ? OR
-                        e.clinic_name LIKE ? OR
-                        e.neighborhood LIKE ? OR
-                        e.therapy_domain LIKE ? OR
-                        e.approach LIKE ?
-                    ) ORDER BY e.id DESC LIMIT 6""",
-                    [q, q, q, q, q],
-                )
-            rows = rs.rows
-
-        if not rows:
-            no_res_msg = """😔 هنوز تجربه‌ای مطابق با انتخاب شما ثبت نشده است.
-می‌توانید گزینه دیگری را امتحان کنید یا تجربه خود را ثبت نمایید."""
-            await update.message.reply_text(
-                no_res_msg,
-                reply_markup=get_menu_keyboard(update.effective_user.id),
-            )
-            return ConversationHandler.END
-
-        response = f"🔎 **نتایج یافت‌شده ({len(rows)} مورد اخیر):**\n\n"
-        for r in rows:
-            addr_line = f"\n🗺 **آدرس کلینیک:** {r[2]}" if r[2] and r[2] != "ثبت نشده" else ""
-            phone_line = f"\n☎️ **شماره تماس:** {r[3]}" if r[3] and r[3] != "ثبت نشده" else ""
-            block = (
-                f"👤 **درمانگر:** {r[0]}\n"
-                f"🏥 **کلینیک:** {r[1]} (📍 {r[4]}){addr_line}{phone_line}\n"
-                f"🎯 **حوزه درمان:** {r[5]} | 🧠 **رویکرد:** {r[6]}\n"
-                f"💬 **تجربه مراجع:** {r[7]}\n"
-                "────────────────────\n"
-            )
-            if len(response) + len(block) > 3900:
-                break
-            response += block
-
-        await update.message.reply_text(
-            response,
-            parse_mode="Markdown",
-            reply_markup=get_menu_keyboard(update.effective_user.id),
-        )
-    except Exception as e:
-        logger.error(f"Search error: {e}")
-        await update.message.reply_text(
-            "⚠️ خطایی در جستجو رخ داد. لطفاً دوباره تلاش کنید.",
-            reply_markup=get_menu_keyboard(update.effective_user.id),
-        )
-
-    return ConversationHandler.END
-
-# ---------------------------------------------------------
-# ۸. پنل مدیریت، تایید تجربه‌ها و دریافت فایل پشتیبان (Backup)
-# ---------------------------------------------------------
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    async with get_db() as client:
-        count_rs = await client.execute("SELECT COUNT(*) FROM experiences WHERE status = 'approved'")
-        approved_count = count_rs.rows[0][0] if count_rs.rows else 0
-
-        rs = await client.execute(
-            """
-            SELECT id, therapist_name, clinic_name, clinic_address, clinic_phone,
-                   neighborhood, therapy_domain, approach, experience_text
-            FROM experiences WHERE status = 'pending'
-            """
-        )
-        pending = rs.rows
-
-    if not pending:
-        await update.message.reply_text(
-            f"🎉 هیچ تجربه‌ای در صف انتظار نیست!\n📚 تعداد کل تجربه‌های تاییدشده و محفوظ در دیتابیس: {approved_count} مورد.",
-            reply_markup=ADMIN_KEYBOARD,
-        )
-        return
-
-    for item in pending:
-        msg = f"""⏳ **در انتظار تایید (کد #{item[0]})**
-
-👤 درمانگر: {item[1]}
-🏥 کلینیک: {item[2]}
-🗺 آدرس: {item[3]} | ☎️ تلفن: {item[4]}
-📍 محله: {item[5]}
-🎯 حوزه: {item[6]} | 🧠 رویکرد: {item[7]}
-📝 متن: {item[8]}"""
-        kb = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton("✅ تایید و انتشار", callback_data=f"approve_{item[0]}"),
-                    InlineKeyboardButton("❌ رد کردن", callback_data=f"reject_{item[0]}"),
-                ]
-            ]
-        )
-        await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=kb)
-
-async def export_backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    try:
-        async with get_db() as client:
-            exp_rs = await client.execute(
-                """
-                SELECT id, therapist_name, clinic_name, clinic_address, clinic_phone,
-                       neighborhood, therapy_domain, approach, experience_text, status, created_at
-                FROM experiences ORDER BY id ASC
-                """
-            )
-            clinics_rs = await client.execute(
-                "SELECT id, name, address, phone, status FROM clinics ORDER BY id ASC"
-            )
-
-        backup_data = {
-            "exported_at": datetime.utcnow().isoformat(),
-            "total_experiences": len(exp_rs.rows),
-            "experiences": [
-                {
-                    "id": r[0],
-                    "therapist_name": r[1],
-                    "clinic_name": r[2],
-                    "clinic_address": r[3],
-                    "clinic_phone": r[4],
-                    "neighborhood": r[5],
-                    "therapy_domain": r[6],
-                    "approach": r[7],
-                    "experience_text": r[8],
-                    "status": r[9],
-                    "created_at": r[10],
-                }
-                for r in exp_rs.rows
-            ],
-            "clinics": [
-                {
-                    "id": c[0],
-                    "name": c[1],
-                    "address": c[2],
-                    "phone": c[3],
-                    "status": c[4],
-                }
-                for c in clinics_rs.rows
-            ],
-        }
-
-        json_bytes = json.dumps(backup_data, ensure_ascii=False, indent=2).encode("utf-8")
-        bio = io.BytesIO(json_bytes)
-        bio.name = f"soroush_backup_{datetime.now().strftime('%Y%m%d_%H%M')}.json"
-
-        await update.message.reply_document(
-            document=bio,
-            caption=f"📦 فایل پشتیبان کامل دیتابیس سروش\n✅ تعداد کل تجربه‌های ثبت‌شده: {len(exp_rs.rows)} مورد",
-            reply_markup=ADMIN_KEYBOARD,
-        )
-    except Exception as e:
-        logger.error(f"Backup export error: {e}")
-        await update.message.reply_text("⚠️ خطا در تهیه فایل پشتیبان.")
-
-async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    action, exp_id = query.data.split("_")
-    async with get_db() as client:
-        if action == "approve":
-            rs = await client.execute("SELECT clinic_name FROM experiences WHERE id = ?", [exp_id])
-            if rs.rows and rs.rows[0][0]:
-                c_name = rs.rows[0][0]
-                await client.execute("UPDATE clinics SET status = 'approved' WHERE name = ?", [c_name])
-
-            await client.execute("UPDATE experiences SET status = 'approved' WHERE id = ?", [exp_id])
-            await query.edit_message_text(
-                f"{query.message.text}\n\n✅ **تایید و منتشر شد (کلینیک، آدرس و تلفن نیز در سیستم ثبت شدند).**",
-                parse_mode="Markdown",
-            )
-        elif action == "reject":
-            await client.execute("UPDATE experiences SET status = 'rejected' WHERE id = ?", [exp_id])
-            await query.edit_message_text(
-                f"{query.message.text}\n\n❌ **رد شد.**", parse_mode="Markdown"
-            )
-
-# ---------------------------------------------------------
-# ۹. اجرای هم‌زمان وب‌سرور و Webhook تلگرام (مقاوم در برابر ری‌استارت)
-# ---------------------------------------------------------
-async def health_check(request):
-    return web.Response(text="Soroush Bot is running!", status=200)
-
-async def run_bot_and_server() -> None:
-    logger.info("Starting Soroush Bot initialization...")
-    await init_db()
-
-    if not BOT_TOKEN:
-        logger.error("BOT_TOKEN environment variable is missing!")
-        return
-
-    application = Application.builder().token(BOT_TOKEN).build()
-
-    conv_handler = ConversationHandler(
-        entry_points=[
-            MessageHandler(filters.Regex("ثبت تجربه"), start_submit),
-            MessageHandler(filters.Regex("جستجوی درمانگر"), start_search),
-            MessageHandler(filters.Regex("راهنمای انتخاب آگاهانه درمانگر|راهنمای سروش"), open_guide_menu),
-        ],
-        states={
-            THERAPIST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_therapist_name)],
-            CLINIC_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_clinic)],
-            NEW_CLINIC_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_new_clinic_name)],
-            NEW_CLINIC_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_new_clinic_address)],
-            NEW_CLINIC_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_new_clinic_phone)],
-            CONFIRM_EXISTING_CLINIC: [MessageHandler(filters.TEXT & ~filters.COMMAND, confirm_existing_clinic)],
-            NEIGHBORHOOD: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_neighborhood)],
-            THERAPY_DOMAIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_therapy_domain)],
-            APPROACH: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_approach)],
-            EXPERIENCE_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_experience)],
-            SEARCH_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_search_type)],
-            SEARCH_QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, perform_search)],
-            GUIDE_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_guide_topic)],
-        },
-        fallbacks=[
-            CommandHandler("start", start),
-            MessageHandler(filters.Regex("بازگشت به منوی اصلی"), start),
-        ],
-        allow_reentry=True,
-    )
-
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", open_guide_menu))
-    application.add_handler(MessageHandler(filters.Regex("بازگشت به منوی اصلی"), start))
-    application.add_handler(MessageHandler(filters.Regex("پنل مدیریت و گزارش"), admin_panel))
-    application.add_handler(MessageHandler(filters.Regex("دریافت فایل پشتیبان"), export_backup))
-    application.add_handler(CallbackQueryHandler(handle_admin_callback))
-    application.add_handler(conv_handler)
-    # هندلرهای سراسری برای دکمه‌های راهنما (فعال حتی پس از ری‌استارت سرور)
-    application.add_handler(
-        MessageHandler(
-            filters.Regex("اخلاق حرفه‌ای|چک‌لیست انتخاب|رویکردهای درمانی|نحوه کار با ربات"),
-            handle_guide_topic,
-        )
-    )
-
-    webhook_path = f"/{BOT_TOKEN}"
-    webhook_url = f"{RENDER_EXTERNAL_URL.rstrip('/')}{webhook_path}"
-
-    async def telegram_webhook(request):
-        try:
-            data = await request.json()
-            update = Update.de_json(data, application.bot)
-            await application.process_update(update)
-        except Exception as e:
-            logger.error(f"Webhook update error: {e}")
-        return web.Response(text="OK", status=200)
-
-    app = web.Application()
-    app.router.add_get("/", health_check)
-    app.router.add_post(webhook_path, telegram_webhook)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-    logger.info(f"Web server started on port {PORT}.")
-
-    try:
-        await application.initialize()
-        await application.start()
-        await application.bot.set_webhook(url=webhook_url)
-        logger.info("Telegram Webhook set and bot started successfully!")
-    except Exception as e:
-        logger.exception(f"Telegram startup warning: {e}")
-
-    await asyncio.Event().wait()
-
-if __name__ == "__main__":
-    asyncio.run(run_bot_and_server())
+                       e.neighborhood, e.therapy_
