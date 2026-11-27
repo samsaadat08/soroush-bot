@@ -4,6 +4,7 @@ import sys
 import json
 import asyncio
 import logging
+from urllib.parse import quote
 from datetime import datetime
 from aiohttp import web
 import libsql_client
@@ -49,7 +50,25 @@ RENDER_EXTERNAL_URL = os.environ.get(
 PORT = int(os.environ.get("PORT", "8080") or "8080")
 
 # ---------------------------------------------------------
-# ۳. اتصال ناهمزمان (Async) به دیتابیس Turso
+# ۳. توابع کمکی پاک‌سازی نام و لینک جستجوی گوگل
+# ---------------------------------------------------------
+def clean_therapist_name(raw_name: str) -> str:
+    name = raw_name.strip()
+    prefixes = ["دکتر ", "آقای ", "خانم ", "استاد ", "دکتر", "آقای", "خانم"]
+    for p in prefixes:
+        if name.startswith(p):
+            name = name[len(p):].strip()
+    return name
+
+def build_google_search_url(therapist_name: str, clinic_name: str) -> str:
+    if clinic_name and clinic_name not in ["مطب شخصی / نامشخص", "نامشخص"]:
+        query = f"{clinic_name} مشهد آدرس و شماره تماس"
+    else:
+        query = f"دکتر {therapist_name} روانشناس مشهد آدرس و شماره تماس"
+    return f"https://www.google.com/search?q={quote(query)}"
+
+# ---------------------------------------------------------
+# ۴. اتصال ناهمزمان (Async) به دیتابیس Turso
 # ---------------------------------------------------------
 def get_db():
     db_url = TURSO_DATABASE_URL.replace("libsql://", "https://")
@@ -114,7 +133,7 @@ async def init_db():
                 pass
 
             default_clinics = [
-                ("کلینیک هیمان", "مشهد - بلوار هاشمیه", "ثبت نشده"),
+                ("کلینیک هیمان", "مشهد - بلوار پیروزی، حد فاصل میدان هاشمیه تا چهارراه کوثر، بین پیروزی ۳۴ و ۳۶، پلاک ۱۱۲۶", "09921883558"),
                 ("کلینیک پناه", "مشهد - محدوده بلوار سجاد / احمدآباد", "ثبت نشده"),
                 ("پلی‌کلینیک دانشگاه فردوسی", "مشهد - پردیس دانشگاه فردوسی", "ثبت نشده"),
             ]
@@ -133,7 +152,7 @@ async def init_db():
         logger.exception(f"Database init error (continuing startup): {e}")
 
 # ---------------------------------------------------------
-# ۴. تعریف مراحل ساده و خطی سفر کاربر (UX)
+# ۵. تعریف مراحل ساده و خطی سفر کاربر (UX)
 # ---------------------------------------------------------
 (
     THERAPIST_NAME,
@@ -276,7 +295,7 @@ async def build_clinics_keyboard(include_add_new: bool = True) -> ReplyKeyboardM
     return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
 # ---------------------------------------------------------
-# ۵. نقطه شروع (/start) - شفاف و بدون شلوغی
+# ۶. نقطه شروع (/start) - شفاف و بدون شلوغی
 # ---------------------------------------------------------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
@@ -293,7 +312,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 # ---------------------------------------------------------
-# ۶. سفر اول: آزمون کاملاً ساده و روزمره ۴ رویکرد اساسی (غیرتشخیصی)
+# ۷. سفر اول: آزمون کاملاً ساده و روزمره ۴ رویکرد اساسی (غیرتشخیصی)
 # ---------------------------------------------------------
 async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["quiz_scores"] = {
@@ -503,12 +522,12 @@ async def handle_quiz_filter_callback(update: Update, context: ContextTypes.DEFA
         await send_search_results_to_chat(query.message, column="approach", query_str=short_key)
 
 # ---------------------------------------------------------
-# ۷. سفر دوم: ثبت تجربه ساده و سریع (فقط ۳ قدم شفاف بدون درگیر کردن کاربر با آدرس و تلفن)
+# ۸. سفر دوم: ثبت تجربه ساده و خطی (۴ قدم کاملاً شفاف: ۱ از ۴ تا ۴ از ۴)
 # ---------------------------------------------------------
 async def start_submit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    msg = """📍 `مسیر شما: ثبت تجربه ◀️ قدم ۱ از ۳`
+    msg = """📍 `مسیر شما: ثبت تجربه ◀️ قدم ۱ از ۴`
 
-👤 **نام و نام خانوادگی درمانگر** خود را بنویسید (بدون پیشوند دکتر):
+👤 **نام و نام خانوادگی درمانگر** خود را بنویسید:
 ✍️ مثال: رضا سعادت‌پور"""
     await update.message.reply_text(
         msg,
@@ -522,14 +541,15 @@ async def get_therapist_name(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if "بازگشت به منوی اصلی" in text:
         return await start(update, context)
 
-    if len(text) < 3:
-        await update.message.reply_text("⚠️ لطفاً نام و نام خانوادگی درمانگر را کامل‌تر بنویسید:")
+    cleaned_name = clean_therapist_name(text)
+    if len(cleaned_name) < 3:
+        await update.message.reply_text("⚠️ لطفاً نام و نام خانوادگی درمانگر را کامل‌تر وارد کنید:")
         return THERAPIST_NAME
 
-    context.user_data["therapist_name"] = text
+    context.user_data["therapist_name"] = cleaned_name
     kb = await build_clinics_keyboard(include_add_new=True)
     await update.message.reply_text(
-        f"📍 `مسیر شما: ثبت تجربه ◀️ قدم ۲ از ۳`\n\n🏥 **دکتر/آقای {text}** در کدام کلینیک یا مرکز بودند؟ از دکمه‌های زیر انتخاب کنید:",
+        f"📍 `مسیر شما: ثبت تجربه ◀️ قدم ۲ از ۴`\n\n🏥 **{cleaned_name}** در کدام کلینیک یا مرکز بودند؟ از دکمه‌های زیر انتخاب کنید:",
         parse_mode="Markdown",
         reply_markup=kb,
     )
@@ -576,7 +596,7 @@ async def select_clinic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             pass
 
     await update.message.reply_text(
-        "📍 `مسیر شما: ثبت تجربه ◀️ قدم ۲ از ۳ (انتخاب موضوع)`\n\n🎯 جلسات شما بیشتر در چه زمینه‌ای بود؟",
+        "📍 `مسیر شما: ثبت تجربه ◀️ قدم ۳ از ۴`\n\n🎯 جلسات شما بیشتر در چه زمینه‌ای بود؟",
         parse_mode="Markdown",
         reply_markup=DOMAIN_KEYBOARD,
     )
@@ -592,7 +612,7 @@ async def get_new_clinic_name(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["clinic_phone"] = "ثبت نشده"
 
     await update.message.reply_text(
-        "📍 `مسیر شما: ثبت تجربه ◀️ قدم ۲ از ۳ (انتخاب موضوع)`\n\n🎯 جلسات شما بیشتر در چه زمینه‌ای بود؟",
+        "📍 `مسیر شما: ثبت تجربه ◀️ قدم ۳ از ۴`\n\n🎯 جلسات شما بیشتر در چه زمینه‌ای بود؟",
         parse_mode="Markdown",
         reply_markup=DOMAIN_KEYBOARD,
     )
@@ -614,7 +634,7 @@ async def get_therapy_domain(update: Update, context: ContextTypes.DEFAULT_TYPE)
     t_name = context.user_data.get("therapist_name", "درمانگر")
 
     await update.message.reply_text(
-        f"📍 `مسیر شما: ثبت تجربه ◀️ قدم ۳ از ۳ (پایان)`\n\n📝 تجربه واقعی و سازنده خودتان را از جلسات با **{t_name}** بنویسید (مثلاً: فضای امن، میزان همدلی، نتیجه‌ای که گرفتید و...):\n\n🔒 *هویت شما کاملاً ناشناس می‌ماند.*",
+        f"📍 `مسیر شما: ثبت تجربه ◀️ قدم ۴ از ۴ (مرحله آخر)`\n\n📝 تجربه واقعی و سازنده خودتان را از جلسات با **{t_name}** بنویسید (مثلاً: فضای امن، میزان همدلی، نتیجه‌ای که گرفتید و...):\n\n🔒 *هویت شما کاملاً ناشناس می‌ماند.*",
         parse_mode="Markdown",
         reply_markup=ReplyKeyboardMarkup([[BACK_BTN]], resize_keyboard=True),
     )
@@ -626,6 +646,7 @@ async def save_experience(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return await start(update, context)
 
     data = context.user_data
+    t_name = data.get("therapist_name", "نامشخص")
     clinic_name = data.get("clinic_name", "نامشخص")
     clinic_address = data.get("clinic_address", "ثبت نشده")
     clinic_phone = data.get("clinic_phone", "ثبت نشده")
@@ -650,7 +671,7 @@ async def save_experience(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 VALUES (?, ?, ?, ?, 'مشهد', ?, 'ثبت توسط مراجع', ?, 'pending')
                 """,
                 [
-                    data.get("therapist_name", "نامشخص"),
+                    t_name,
                     clinic_name,
                     clinic_address,
                     clinic_phone,
@@ -668,18 +689,25 @@ async def save_experience(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         if ADMIN_ID:
             new_clinic_tag = "🆕 (کلینیک جدید)" if is_new_clinic else ""
+            google_url = build_google_search_url(t_name, clinic_name)
             admin_msg = f"""🆕 **تجربه جدید ثبت شد (کد #{exp_id})**
 
-👤 **درمانگر:** {data.get('therapist_name')}
+👤 **درمانگر:** {t_name}
 🏥 **کلینیک:** {clinic_name} {new_clinic_tag}
 🎯 **حوزه درمان:** {data.get('therapy_domain')}
 📝 **متن تجربه:**
-{exp_text}"""
+{exp_text}
+
+💡 *برای ثبت آدرس کلینیک در دیتابیس:*
+`/setclinic {clinic_name} | آدرس | تلفن`"""
             keyboard = InlineKeyboardMarkup(
                 [
                     [
                         InlineKeyboardButton("✅ تایید و انتشار", callback_data=f"approve_{exp_id}"),
                         InlineKeyboardButton("❌ رد کردن", callback_data=f"reject_{exp_id}"),
+                    ],
+                    [
+                        InlineKeyboardButton("🔍 جستجوی آدرس در گوگل", url=google_url)
                     ]
                 ]
             )
@@ -704,7 +732,7 @@ async def save_experience(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return ConversationHandler.END
 
 # ---------------------------------------------------------
-# ۸. سفر سوم: جستجوی سریع و شفاف درمانگر (۲ قدم تا نتیجه)
+# ۹. سفر سوم: جستجوی سریع و شفاف درمانگر + دکمه هوشمند گوگل برای آدرس‌های ثبت‌نشده
 # ---------------------------------------------------------
 async def start_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
@@ -774,7 +802,8 @@ async def perform_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "📍 جستجو با محله در مشهد": "neighborhood",
     }
     column = col_map.get(mode, "all")
-    return await show_search_results(update, context, column=column, query_str=text)
+    search_val = clean_therapist_name(text) if column == "therapist_name" else text
+    return await show_search_results(update, context, column=column, query_str=search_val)
 
 async def send_search_results_to_chat(message_obj, column: str | None, query_str: str | None):
     try:
@@ -789,11 +818,11 @@ async def send_search_results_to_chat(message_obj, column: str | None, query_str
                 WHERE e.status = 'approved'
             """
             if not query_str:
-                rs = await client.execute(f"{base_sql} ORDER BY e.id DESC LIMIT 6")
+                rs = await client.execute(f"{base_sql} ORDER BY e.id DESC LIMIT 5")
             elif column and column != "all":
                 q = f"%{query_str}%"
                 rs = await client.execute(
-                    f"{base_sql} AND e.{column} LIKE ? ORDER BY e.id DESC LIMIT 6",
+                    f"{base_sql} AND e.{column} LIKE ? ORDER BY e.id DESC LIMIT 5",
                     [q],
                 )
             else:
@@ -805,7 +834,7 @@ async def send_search_results_to_chat(message_obj, column: str | None, query_str
                         e.neighborhood LIKE ? OR
                         e.therapy_domain LIKE ? OR
                         e.approach LIKE ?
-                    ) ORDER BY e.id DESC LIMIT 6""",
+                    ) ORDER BY e.id DESC LIMIT 5""",
                     [q, q, q, q, q],
                 )
             rows = rs.rows
@@ -819,27 +848,42 @@ async def send_search_results_to_chat(message_obj, column: str | None, query_str
             )
             return
 
-        response = f"🔎 **نتایج یافت‌شده ({len(rows)} مورد اخیر):**\n\n"
-        for r in rows:
-            addr_line = f"\n🗺 **آدرس کلینیک:** {r[2]}" if r[2] and r[2] != "ثبت نشده" else ""
-            phone_line = f"\n☎️ **شماره تماس:** {r[3]}" if r[3] and r[3] != "ثبت نشده" else ""
-            approach_str = f" | 🧠 **سبک:** {r[6]}" if r[6] and r[6] != "ثبت توسط مراجع" else ""
-            block = (
-                f"👤 **درمانگر:** {r[0]}\n"
-                f"🏥 **کلینیک:** {r[1]}{addr_line}{phone_line}\n"
-                f"🎯 **موضوع:** {r[5]}{approach_str}\n"
-                f"💬 **تجربه مراجع:** {r[7]}\n"
-                "────────────────────\n"
-            )
-            if len(response) + len(block) > 3900:
-                break
-            response += block
-
         await message_obj.reply_text(
-            response,
+            f"🔎 **نتایج یافت‌شده ({len(rows)} مورد اخیر):**",
             parse_mode="Markdown",
             reply_markup=get_menu_keyboard(message_obj.chat.id),
         )
+
+        for r in rows:
+            t_name, c_name, c_addr, c_phone, _, t_domain, t_approach, exp_txt = r
+            has_addr = c_addr and c_addr != "ثبت نشده"
+            has_phone = c_phone and c_phone != "ثبت نشده"
+
+            addr_line = f"\n🗺 **آدرس:** {c_addr}" if has_addr else ""
+            phone_line = f"\n☎️ **تلفن:** `{c_phone}`" if has_phone else ""
+            approach_str = f" | 🧠 **سبک:** {t_approach}" if t_approach and t_approach != "ثبت توسط مراجع" else ""
+
+            card_text = (
+                f"👤 **درمانگر:** {t_name}\n"
+                f"🏥 **مرکز/کلینیک:** {c_name}{addr_line}{phone_line}\n"
+                f"🎯 **موضوع:** {t_domain}{approach_str}\n"
+                f"💬 **تجربه مراجع:**\n{exp_txt}"
+            )
+
+            # اگر آدرس یا تلفن در دیتابیس ثبت نشده بود، دکمه جستجوی خودکار در گوگل نمایش داده می‌شود
+            inline_buttons = []
+            if not has_addr or not has_phone:
+                g_url = build_google_search_url(t_name, c_name)
+                btn_label = f"🌐 جستجوی آدرس و تماس «{c_name}» در گوگل" if c_name not in ["مطب شخصی / نامشخص", "نامشخص"] else f"🌐 جستجوی اطلاعات «{t_name}» در گوگل"
+                inline_buttons.append([InlineKeyboardButton(btn_label, url=g_url)])
+
+            reply_markup_inline = InlineKeyboardMarkup(inline_buttons) if inline_buttons else None
+            await message_obj.reply_text(
+                card_text,
+                parse_mode="Markdown",
+                reply_markup=reply_markup_inline,
+            )
+
     except Exception as e:
         logger.error(f"Search error: {e}")
         await message_obj.reply_text(
@@ -854,7 +898,7 @@ async def show_search_results(
     return ConversationHandler.END
 
 # ---------------------------------------------------------
-# ۹. بخش آموزشی راهنمای انتخاب آگاهانه درمانگر
+# ۱۰. بخش آموزشی راهنمای انتخاب آگاهانه درمانگر
 # ---------------------------------------------------------
 async def open_guide_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     guide_intro = """📍 `مسیر شما: راهنمای انتخاب درمانگر`
@@ -895,7 +939,7 @@ async def handle_guide_topic(update: Update, context: ContextTypes.DEFAULT_TYPE)
     elif "نحوه کار" in choice:
         text = """📖 **سروش چطور کار می‌کند؟**
 
-✍️ **ثبت تجربه ناشناس:** در ۳ قدم ساده و بدون ثبت نام، تجربه مثبت خود را از درمانگر ثبت کنید.
+✍️ **ثبت تجربه ناشناس:** در ۴ قدم ساده و بدون ثبت نام، تجربه مثبت خود را از درمانگر ثبت کنید.
 🔍 **جستجوی هوشمند:** بر اساس نام درمانگر، کلینیک یا موضوع، تجربه‌های واقعی مراجعان مشهد را بخوانید.
 📞 **پشتیبانی:** @Reza_saadatpour"""
     else:
@@ -909,8 +953,40 @@ async def handle_guide_topic(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return GUIDE_MENU
 
 # ---------------------------------------------------------
-# ۱۰. پنل مدیریت، تایید تجربه‌ها و دریافت فایل پشتیبان (Backup)
+# ۱۱. پنل مدیریت، دستور سریع ثبت آدرس کلینیک و فایل پشتیبان
 # ---------------------------------------------------------
+async def set_clinic_info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id != ADMIN_ID:
+        return
+    raw_text = update.message.text.replace("/setclinic", "").strip()
+    parts = [p.strip() for p in raw_text.split("|")]
+    if len(parts) < 2:
+        await update.message.reply_text(
+            "فرمت دستور:\n`/setclinic نام کلینیک | آدرس دقیق | شماره تلفن`",
+            parse_mode="Markdown",
+        )
+        return
+    c_name = parts[0]
+    c_addr = parts[1] if len(parts) > 1 and parts[1] else "ثبت نشده"
+    c_phone = parts[2] if len(parts) > 2 and parts[2] else "ثبت نشده"
+
+    async with get_db() as client:
+        rs = await client.execute("SELECT id FROM clinics WHERE name = ?", [c_name])
+        if rs.rows:
+            await client.execute(
+                "UPDATE clinics SET address = ?, phone = ?, status = 'approved' WHERE name = ?",
+                [c_addr, c_phone, c_name],
+            )
+        else:
+            await client.execute(
+                "INSERT INTO clinics (name, address, phone, status) VALUES (?, ?, ?, 'approved')",
+                [c_name, c_addr, c_phone],
+            )
+    await update.message.reply_text(
+        f"✅ اطلاعات **{c_name}** در دیتابیس ذخیره شد و از این پس زیر کارت درمانگران این مرکز نمایش داده می‌شود.",
+        parse_mode="Markdown",
+    )
+
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id != ADMIN_ID:
         return
@@ -935,6 +1011,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     for item in pending:
+        g_url = build_google_search_url(item[1], item[2])
         msg = f"""⏳ **در انتظار تایید (کد #{item[0]})**
 
 👤 درمانگر: {item[1]}
@@ -946,6 +1023,9 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 [
                     InlineKeyboardButton("✅ تایید و انتشار", callback_data=f"approve_{item[0]}"),
                     InlineKeyboardButton("❌ رد کردن", callback_data=f"reject_{item[0]}"),
+                ],
+                [
+                    InlineKeyboardButton("🔍 جستجوی آدرس در گوگل", url=g_url)
                 ]
             ]
         )
@@ -1039,7 +1119,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             )
 
 # ---------------------------------------------------------
-# ۱۱. اجرای هم‌زمان وب‌سرور و Webhook تلگرام
+# ۱۲. اجرای هم‌زمان وب‌سرور و Webhook تلگرام
 # ---------------------------------------------------------
 async def health_check(request):
     return web.Response(text="Soroush Bot is running!", status=200)
@@ -1084,6 +1164,7 @@ async def run_bot_and_server() -> None:
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", open_guide_menu))
+    application.add_handler(CommandHandler("setclinic", set_clinic_info_cmd))
     application.add_handler(MessageHandler(filters.Regex("بازگشت به منوی اصلی"), start))
     application.add_handler(MessageHandler(filters.Regex("پنل مدیریت و گزارش"), admin_panel))
     application.add_handler(MessageHandler(filters.Regex("دریافت فایل پشتیبان"), export_backup))
