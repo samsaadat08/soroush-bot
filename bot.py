@@ -783,4 +783,351 @@ async def send_search_results_to_chat(message_obj, column: str | None, query_str
                 SELECT e.therapist_name, e.clinic_name,
                        COALESCE(NULLIF(e.clinic_address, 'ثبت نشده'), c.address, 'ثبت نشده'),
                        COALESCE(NULLIF(e.clinic_phone, 'ثبت نشده'), c.phone, 'ثبت نشده'),
-                       e.neighborhood, e.therapy_
+                       e.neighborhood, e.therapy_domain, e.approach, e.experience_text
+                FROM experiences e
+                LEFT JOIN clinics c ON e.clinic_name = c.name
+                WHERE e.status = 'approved'
+            """
+            if not query_str:
+                rs = await client.execute(f"{base_sql} ORDER BY e.id DESC LIMIT 6")
+            elif column and column != "all":
+                q = f"%{query_str}%"
+                rs = await client.execute(
+                    f"{base_sql} AND e.{column} LIKE ? ORDER BY e.id DESC LIMIT 6",
+                    [q],
+                )
+            else:
+                q = f"%{query_str}%"
+                rs = await client.execute(
+                    f"""{base_sql} AND (
+                        e.therapist_name LIKE ? OR
+                        e.clinic_name LIKE ? OR
+                        e.neighborhood LIKE ? OR
+                        e.therapy_domain LIKE ? OR
+                        e.approach LIKE ?
+                    ) ORDER BY e.id DESC LIMIT 6""",
+                    [q, q, q, q, q],
+                )
+            rows = rs.rows
+
+        if not rows:
+            no_res_msg = """😔 هنوز تجربه‌ای مطابق با انتخاب شما ثبت نشده است.
+می‌توانید گزینه دیگری را امتحان کنید یا اگر خودتان تجربه‌ای دارید ثبت نمایید."""
+            await message_obj.reply_text(
+                no_res_msg,
+                reply_markup=get_menu_keyboard(message_obj.chat.id),
+            )
+            return
+
+        response = f"🔎 **نتایج یافت‌شده ({len(rows)} مورد اخیر):**\n\n"
+        for r in rows:
+            addr_line = f"\n🗺 **آدرس کلینیک:** {r[2]}" if r[2] and r[2] != "ثبت نشده" else ""
+            phone_line = f"\n☎️ **شماره تماس:** {r[3]}" if r[3] and r[3] != "ثبت نشده" else ""
+            approach_str = f" | 🧠 **سبک:** {r[6]}" if r[6] and r[6] != "ثبت توسط مراجع" else ""
+            block = (
+                f"👤 **درمانگر:** {r[0]}\n"
+                f"🏥 **کلینیک:** {r[1]}{addr_line}{phone_line}\n"
+                f"🎯 **موضوع:** {r[5]}{approach_str}\n"
+                f"💬 **تجربه مراجع:** {r[7]}\n"
+                "────────────────────\n"
+            )
+            if len(response) + len(block) > 3900:
+                break
+            response += block
+
+        await message_obj.reply_text(
+            response,
+            parse_mode="Markdown",
+            reply_markup=get_menu_keyboard(message_obj.chat.id),
+        )
+    except Exception as e:
+        logger.error(f"Search error: {e}")
+        await message_obj.reply_text(
+            "⚠️ خطایی در جستجو رخ داد. لطفاً دوباره تلاش کنید.",
+            reply_markup=get_menu_keyboard(message_obj.chat.id),
+        )
+
+async def show_search_results(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, column: str | None, query_str: str | None
+) -> int:
+    await send_search_results_to_chat(update.message, column, query_str)
+    return ConversationHandler.END
+
+# ---------------------------------------------------------
+# ۹. بخش آموزشی راهنمای انتخاب آگاهانه درمانگر
+# ---------------------------------------------------------
+async def open_guide_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    guide_intro = """📍 `مسیر شما: راهنمای انتخاب درمانگر`
+
+🧭 **راهنمای انتخاب آگاهانه درمانگر**
+برای اینکه با خیال راحت‌تر تصمیم بگیرید، یکی از موضوعات زیر را انتخاب کنید 👇"""
+    await update.message.reply_text(
+        guide_intro,
+        parse_mode="Markdown",
+        reply_markup=GUIDE_KEYBOARD,
+    )
+    return GUIDE_MENU
+
+async def handle_guide_topic(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    choice = update.message.text.strip()
+    if "بازگشت به منوی اصلی" in choice:
+        return await start(update, context)
+
+    if "اخلاق" in choice:
+        text = """⚖️ **اخلاق حرفه‌ای و خطوط قرمز در اتاق درمان**
+
+🔒 **رازدارای مطلق:** تمام صحبت‌های شما در اتاق درمان کاملاً محرمانه است.
+🚧 **مرزبندی حرفه‌ای:** درمانگر متعهد هیچ رابطه دوستی، عاطفی یا مالی خارج از جلسات با مراجع برقرار نمی‌کند.
+🤝 **احترام و عدم قضاوت:** اتاق درمان جای سرزنش یا تحمیل عقاید شخصی نیست."""
+    elif "چک‌لیست" in choice:
+        text = """🎓 **چک‌لیست انتخاب یک درمانگر حرفه‌ای**
+
+🪪 **۱. شماره نظام روانشناسی:** مطمئن شوید درمانگر دارای پروانه کار معتبر از سازمان نظام روانشناسی است.
+💚 **۲. احساس امنیت در جلسات اول:** مهم‌ترین نشانه یک درمانگر خوب برای شما، احساس امنیت و درک شدن در ۲ تا ۳ جلسه اول است.
+⏳ **۳. پرهیز از وعده‌های معجزه‌آسا:** تغییر روانی تدریجی است؛ از افرادی که قول حل قطعی مشکل در یک جلسه را می‌دهند فاصله بگیرید."""
+    elif "رویکرد" in choice:
+        text = """🧠 **آشنایی خیلی ساده با سبک‌های اصلی مشاوره**
+
+🌱 **انسان‌گرا و وجودی:** کمک به شناخت خودِ واقعی، پیدا کردن معنا در زندگی و تصمیم‌گیری آزادانه بدون قضاوت.
+🧩 **شناختی-رفتاری (CBT):** یادگیری راهکارهای عملی و علمی برای کنترل فکرهای منفی، استرس و اضطراب.
+🌊 **پویشی و تحلیلی:** ریشه‌یابی رفتارها و احساسات تکراری امروز در تجربه‌های گذشته و لایه‌های عمیق ذهن.
+❤️ **سیستمی و رابطه‌ای (EFT):** ترمیم پیوندهای عاطفی و حل تعارض‌ها در خانواده و رابطه زوجی."""
+    elif "نحوه کار" in choice:
+        text = """📖 **سروش چطور کار می‌کند؟**
+
+✍️ **ثبت تجربه ناشناس:** در ۳ قدم ساده و بدون ثبت نام، تجربه مثبت خود را از درمانگر ثبت کنید.
+🔍 **جستجوی هوشمند:** بر اساس نام درمانگر، کلینیک یا موضوع، تجربه‌های واقعی مراجعان مشهد را بخوانید.
+📞 **پشتیبانی:** @Reza_saadatpour"""
+    else:
+        text = "👇 لطفاً یکی از موضوعات زیر را انتخاب کنید:"
+
+    await update.message.reply_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=GUIDE_KEYBOARD,
+    )
+    return GUIDE_MENU
+
+# ---------------------------------------------------------
+# ۱۰. پنل مدیریت، تایید تجربه‌ها و دریافت فایل پشتیبان (Backup)
+# ---------------------------------------------------------
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    async with get_db() as client:
+        count_rs = await client.execute("SELECT COUNT(*) FROM experiences WHERE status = 'approved'")
+        approved_count = count_rs.rows[0][0] if count_rs.rows else 0
+
+        rs = await client.execute(
+            """
+            SELECT id, therapist_name, clinic_name, therapy_domain, experience_text
+            FROM experiences WHERE status = 'pending'
+            """
+        )
+        pending = rs.rows
+
+    if not pending:
+        await update.message.reply_text(
+            f"🎉 هیچ تجربه‌ای در صف انتظار نیست!\n📚 تعداد کل تجربه‌های تاییدشده در دیتابیس: {approved_count} مورد.",
+            reply_markup=ADMIN_KEYBOARD,
+        )
+        return
+
+    for item in pending:
+        msg = f"""⏳ **در انتظار تایید (کد #{item[0]})**
+
+👤 درمانگر: {item[1]}
+🏥 کلینیک: {item[2]}
+🎯 موضوع: {item[3]}
+📝 متن: {item[4]}"""
+        kb = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton("✅ تایید و انتشار", callback_data=f"approve_{item[0]}"),
+                    InlineKeyboardButton("❌ رد کردن", callback_data=f"reject_{item[0]}"),
+                ]
+            ]
+        )
+        await update.message.reply_text(msg, parse_mode="Markdown", reply_markup=kb)
+
+async def export_backup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    try:
+        async with get_db() as client:
+            exp_rs = await client.execute(
+                """
+                SELECT id, therapist_name, clinic_name, clinic_address, clinic_phone,
+                       neighborhood, therapy_domain, approach, experience_text, status, created_at
+                FROM experiences ORDER BY id ASC
+                """
+            )
+            clinics_rs = await client.execute(
+                "SELECT id, name, address, phone, status FROM clinics ORDER BY id ASC"
+            )
+
+        backup_data = {
+            "exported_at": datetime.utcnow().isoformat(),
+            "total_experiences": len(exp_rs.rows),
+            "experiences": [
+                {
+                    "id": r[0],
+                    "therapist_name": r[1],
+                    "clinic_name": r[2],
+                    "clinic_address": r[3],
+                    "clinic_phone": r[4],
+                    "neighborhood": r[5],
+                    "therapy_domain": r[6],
+                    "approach": r[7],
+                    "experience_text": r[8],
+                    "status": r[9],
+                    "created_at": r[10],
+                }
+                for r in exp_rs.rows
+            ],
+            "clinics": [
+                {
+                    "id": c[0],
+                    "name": c[1],
+                    "address": c[2],
+                    "phone": c[3],
+                    "status": c[4],
+                }
+                for c in clinics_rs.rows
+            ],
+        }
+
+        json_bytes = json.dumps(backup_data, ensure_ascii=False, indent=2).encode("utf-8")
+        bio = io.BytesIO(json_bytes)
+        bio.name = f"soroush_backup_{datetime.now().strftime('%Y%m%d_%H%M')}.json"
+
+        await update.message.reply_document(
+            document=bio,
+            caption=f"📦 فایل پشتیبان کامل دیتابیس سروش\n✅ تعداد کل تجربه‌های ثبت‌شده: {len(exp_rs.rows)} مورد",
+            reply_markup=ADMIN_KEYBOARD,
+        )
+    except Exception as e:
+        logger.error(f"Backup export error: {e}")
+        await update.message.reply_text("⚠️ خطا در تهیه فایل پشتیبان.")
+
+async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    action, exp_id = query.data.split("_")
+    async with get_db() as client:
+        if action == "approve":
+            rs = await client.execute("SELECT clinic_name FROM experiences WHERE id = ?", [exp_id])
+            if rs.rows and rs.rows[0][0]:
+                c_name = rs.rows[0][0]
+                await client.execute("UPDATE clinics SET status = 'approved' WHERE name = ?", [c_name])
+
+            await client.execute("UPDATE experiences SET status = 'approved' WHERE id = ?", [exp_id])
+            await query.edit_message_text(
+                f"{query.message.text}\n\n✅ **تایید و منتشر شد.**",
+                parse_mode="Markdown",
+            )
+        elif action == "reject":
+            await client.execute("UPDATE experiences SET status = 'rejected' WHERE id = ?", [exp_id])
+            await query.edit_message_text(
+                f"{query.message.text}\n\n❌ **رد شد.**", parse_mode="Markdown"
+            )
+
+# ---------------------------------------------------------
+# ۱۱. اجرای هم‌زمان وب‌سرور و Webhook تلگرام
+# ---------------------------------------------------------
+async def health_check(request):
+    return web.Response(text="Soroush Bot is running!", status=200)
+
+async def run_bot_and_server() -> None:
+    logger.info("Starting Soroush Bot initialization...")
+    await init_db()
+
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN environment variable is missing!")
+        return
+
+    application = Application.builder().token(BOT_TOKEN).build()
+
+    conv_handler = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.Regex("ثبت تجربه"), start_submit),
+            MessageHandler(filters.Regex("پیدا کردن درمانگر|جستجوی درمانگر"), start_search),
+            MessageHandler(filters.Regex("راهنمای انتخاب درمانگر|راهنمای انتخاب آگاهانه"), open_guide_menu),
+            MessageHandler(filters.Regex("کدام سبک مشاوره"), start_quiz),
+        ],
+        states={
+            THERAPIST_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_therapist_name)],
+            CLINIC_SELECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_clinic)],
+            NEW_CLINIC_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_new_clinic_name)],
+            THERAPY_DOMAIN: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_therapy_domain)],
+            EXPERIENCE_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_experience)],
+            SEARCH_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_search_type)],
+            SEARCH_QUERY: [MessageHandler(filters.TEXT & ~filters.COMMAND, perform_search)],
+            GUIDE_MENU: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_guide_topic)],
+            QUIZ_Q1: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_quiz_q1)],
+            QUIZ_Q2: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_quiz_q2)],
+            QUIZ_Q3: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_quiz_q3)],
+            QUIZ_Q4: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_quiz_q4)],
+        },
+        fallbacks=[
+            CommandHandler("start", start),
+            MessageHandler(filters.Regex("بازگشت به منوی اصلی"), start),
+        ],
+        allow_reentry=True,
+    )
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", open_guide_menu))
+    application.add_handler(MessageHandler(filters.Regex("بازگشت به منوی اصلی"), start))
+    application.add_handler(MessageHandler(filters.Regex("پنل مدیریت و گزارش"), admin_panel))
+    application.add_handler(MessageHandler(filters.Regex("دریافت فایل پشتیبان"), export_backup))
+    application.add_handler(CallbackQueryHandler(handle_quiz_filter_callback, pattern="^quizfilter_"))
+    application.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^(approve|reject)_"))
+    application.add_handler(conv_handler)
+    application.add_handler(
+        MessageHandler(
+            filters.Regex("اخلاق حرفه‌ای|چک‌لیست انتخاب|رویکردهای درمانی|نحوه کار با ربات"),
+            handle_guide_topic,
+        )
+    )
+
+    webhook_path = f"/{BOT_TOKEN}"
+    webhook_url = f"{RENDER_EXTERNAL_URL.rstrip('/')}{webhook_path}"
+
+    async def telegram_webhook(request):
+        try:
+            data = await request.json()
+            update = Update.de_json(data, application.bot)
+            await application.process_update(update)
+        except Exception as e:
+            logger.error(f"Webhook update error: {e}")
+        return web.Response(text="OK", status=200)
+
+    app = web.Application()
+    app.router.add_get("/", health_check)
+    app.router.add_post(webhook_path, telegram_webhook)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    logger.info(f"Web server started on port {PORT}.")
+
+    try:
+        await application.initialize()
+        await application.start()
+        await application.bot.set_webhook(url=webhook_url)
+        logger.info("Telegram Webhook set and bot started successfully!")
+    except Exception as e:
+        logger.exception(f"Telegram startup warning: {e}")
+
+    await asyncio.Event().wait()
+
+if __name__ == "__main__":
+    asyncio.run(run_bot_and_server())
